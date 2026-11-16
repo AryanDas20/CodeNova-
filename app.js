@@ -761,7 +761,7 @@ $('#motionSwitch').addEventListener('click', () => {
 function openAgent() {
   $('#agentBackdrop').classList.add('open'); $('#agentDrawer').classList.add('open');
   $('#agentDrawer').setAttribute('aria-hidden', 'false');
-  $('#agentContext').textContent = state.user ? `${state.workspace?.name || 'No workspace'} · ${state.role || 'No role'}` : 'Guest preview · Feature help only';
+  $('#agentContext').textContent = state.user ? `${state.workspace?.name || 'No workspace'} · ${state.role || 'No role'} · Connected account` : 'Guest preview · Conversational help · Sign in for workspace actions';
   $('#agentInput').focus();
 }
 function closeAgent() {
@@ -772,6 +772,9 @@ $('#agentTopButton').addEventListener('click', openAgent);
 $('#openAgentNav').addEventListener('click', openAgent);
 $('#guideAgentButton').addEventListener('click', openAgent);
 $('#guideOpenAgent').addEventListener('click', openAgent);
+$('#agentFloatingButton').addEventListener('click', openAgent);
+$('#guideFastNavAgent').addEventListener('click', openAgent);
+$('#guideSafeAgent').addEventListener('click', openAgent);
 $('#closeAgent').addEventListener('click', closeAgent);
 $('#agentBackdrop').addEventListener('click', closeAgent);
 function addAgentMessage(text, who = 'assistant') {
@@ -830,7 +833,14 @@ async function executeAgentProposal(card, button) {
   }
 }
 function guestAgentReply(message) {
-  const lower = message.toLowerCase();
+  const lower = message.toLowerCase().trim().replace(/[!?.,]+$/g, '');
+  const greetings = /^(hi|hello|hey|hii+|good morning|good afternoon|good evening|howdy|yo|namaste|नमस्ते)(\s+there)?$/i;
+  if (greetings.test(lower)) return 'Hey! 👋 I’m Agent 37, the BASE assistant. I can help you understand the platform, explain how reviews and approved sources work, show you around the feature guide, and help you get started. What are you working on today?';
+  if (/^(how are you|how are u|what's up|whats up)$/.test(lower)) return 'Doing well and ready to help! I can walk you through BASE, explain a feature step by step, or help you decide where to start. What would you like to explore?';
+  if (/^(thanks|thank you|thx|ty)$/.test(lower)) return 'You’re welcome! If you want, tell me what you’re trying to do in BASE and I’ll guide you through it.';
+  if (/^(help|what can you do|what do you do|capabilities)$/.test(lower)) return 'I can help with:\n• Explaining every BASE area and its workflow\n• Showing you the review queue, source library, insights, team and audit history\n• Guiding you through sign-in and workspace setup\n• Navigating to a page in this preview\n• Explaining which actions require a role or confirmation\n\nSign in to connect me to your real workspace. I’ll always ask before changing saved data.';
+  if (/^(who are you|what is your name)$/.test(lower)) return 'I’m Agent 37, the built-in BASE assistant for Brand Assurance & Source Evidence. I help people understand the product and, when signed in, work with supported workspace features under your permissions.';
+  if (/^(what is base|what is this|explain base|about base)$/.test(lower)) return 'BASE means Brand Assurance & Source Evidence. It brings together a source library for approved brand knowledge, a review queue for checking content against that knowledge, insights from real review findings, team roles and an audit timeline. Agent 37 helps you navigate and prepare supported actions. Guest preview is read-only and intentionally contains no fake records.';
   const routes = [
     ['overview', ['overview', 'dashboard', 'home']], ['reviews', ['review queue', 'reviews', 'review page']],
     ['sources', ['source library', 'brand sources', 'sources']], ['insights', ['insights', 'analytics']],
@@ -843,10 +853,10 @@ function guestAgentReply(message) {
   }
   if (lower.includes('username') || lower.includes('display name')) return 'To change your display name, sign in, open Settings, edit “Your profile” and save. You can also ask me to change it after Agent 37 is connected to your authenticated workspace. I will ask you to confirm before applying it.';
   if (lower.includes('google') || lower.includes('login') || lower.includes('sign in')) return 'Use the Sign in button to continue with Google or email and password. Google OAuth must be enabled in your Supabase project and its redirect URL must include this site domain.';
-  if (lower.includes('agent 37') || lower.includes('ai')) return 'Agent 37 is designed to answer workspace questions, navigate pages and prepare supported actions such as changing your display name, creating reviews or sources, inviting a teammate and updating review status. It needs the secure Edge Function and a server-side AI API key. Every data-changing action is presented for confirmation.';
+  if (lower.includes('agent 37') || /\bai\b/.test(lower)) return 'Agent 37 is designed to answer workspace questions, navigate pages and prepare supported actions such as changing your display name, creating reviews or sources, inviting a teammate and updating review status. It needs the secure Edge Function and a server-side AI API key. Every data-changing action is presented for confirmation.';
   const section = routes.find(([, terms]) => terms.some(term => lower.includes(term)));
   if (section) return featureHelp[section[0]];
-  return 'I can explain BASE features in this preview, but I cannot access an account or change data until you sign in. Try “Explain the review queue”, “How do I change my username?” or “Go to the source library”.';
+  return 'I can help you explore BASE in this preview. I don’t have access to private account or workspace records until you sign in, but I can explain how the product works. Try asking about reviews, approved sources, insights, team roles, audit history or Agent 37—or tell me which page you want to open.';
 }
 async function sendAgentMessage() {
   const input = $('#agentInput'); const message = input.value.trim();
@@ -869,7 +879,13 @@ async function sendAgentMessage() {
     if (data?.navigate) go(data.navigate);
   } catch (error) {
     waiting.remove();
-    addAgentMessage(`Agent 37 is not ready: ${error.message}. Deploy supabase/functions/agent-37 and configure its secrets to enable AI actions.`);
+    const detail = error?.message || error?.context?.message || 'Unknown connection error';
+    const hint = /401|unauthori[sz]ed|jwt|token/i.test(detail) ? 'Your sign-in session may have expired. Sign out and sign in again.' : /404|not found|function/i.test(detail) ? 'Deploy the agent-37 Edge Function in Supabase.' : /OPENAI_API_KEY|api key|model|provider|429|quota|billing/i.test(detail) ? 'Check the OPENAI_API_KEY, OPENAI_MODEL and OpenAI project billing in Supabase Edge Function secrets.' : 'Check the Supabase function logs and your network connection.';
+    addAgentMessage(`I couldn’t reach the Agent 37 service.
+
+Details: ${detail}
+
+Next step: ${hint} Your data has not been changed.`);
   } finally { $('#agentSend').disabled = false; }
 }
 $('#agentSend').addEventListener('click', sendAgentMessage);

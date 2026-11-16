@@ -15,7 +15,7 @@ BASE is a source-backed brand-governance workspace. This build removes seeded/de
 - **Insights:** category, severity and approval counts are computed from real saved review records. Empty workspaces remain empty.
 - **Audit history:** append-only-from-browser activity records and CSV export.
 - **Settings:** update the current user's display name, theme, reduced-motion preference, account session and JSON workspace export.
-- **Agent 37:** AI assistant for workspace questions and supported actions. It can navigate pages and propose username updates, review/source creation, review decisions, teammate invitations, comments, deletions and workspace renames. Every data-changing action is displayed as a proposal and requires explicit confirmation.
+- **Agent 37:** prominent floating assistant launcher, larger chat panel, quick prompts, natural greeting/help responses in guest preview, and AI assistant for authenticated workspace questions and supported actions. It can navigate pages and propose username updates, review/source creation, review decisions, teammate invitations, comments, deletions and workspace renames. Every data-changing action is displayed as a proposal and requires explicit confirmation.
 - **Responsible review:** AI findings must point to a source in the active workspace or be labelled unverified. The AI cannot approve or publish content itself.
 - **Responsive interface:** mobile navigation, adaptive layouts, dialogs, loading states, keyboard access and polished motion with a reduced-motion preference.
 
@@ -29,7 +29,7 @@ python -m http.server 5500
 
 Then open `http://localhost:5500`.
 
-The website runs in the empty guest preview until Supabase is configured. No records are generated locally or inserted as placeholders.
+The website runs in the empty guest preview until Supabase is configured. The guest assistant handles greetings, product help and local page navigation; authenticated AI answers and workspace actions require signing in and deploying the Edge Function. No records are generated locally or inserted as placeholders.
 
 ## 1. Create and configure Supabase
 
@@ -40,7 +40,7 @@ The website runs in the empty guest preview until Supabase is configured. No rec
 
 ```js
 export const supabaseConfig = {
-  url: 'https://YOUR_PROJECT_REF.supabase.co',
+  url: 'https://egmekbtdurqrpikxfwee.supabase.co',
   anonKey: 'YOUR_SUPABASE_ANON_OR_PUBLISHABLE_KEY'
 };
 ```
@@ -58,7 +58,7 @@ Do not enable public/anonymous read access to workspace tables. Do not disable R
 
 ## 2. Set up Agent 37 (AI)
 
-Agent 37 is not a fake browser-side chatbot. It runs in a Supabase Edge Function so the model API key and privileged invitation credentials never reach the browser.
+Agent 37 runs in a Supabase Edge Function so the model API key and privileged invitation credentials never reach the browser. In guest preview, the assistant can greet visitors, explain the product and navigate locally; it does not call the private AI model or access workspace records until a user signs in. This avoids exposing an unauthenticated public AI endpoint.
 
 Install the Supabase CLI, log in and link your project from this folder. Then deploy the function:
 
