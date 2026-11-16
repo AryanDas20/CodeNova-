@@ -148,3 +148,7 @@ npm run serve
 ```
 
 For local Agent 37 testing, copy `supabase/functions/.env.example` to `supabase/functions/.env`, add your own OpenAI API key, then run `supabase functions serve agent-37 --env-file supabase/functions/.env` after starting the local Supabase stack. The `.env` file is ignored by Git. The hosted function keeps JWT verification enabled.
+
+
+### SQL migration note (updated)
+The schema now upgrades older `brand_sources` tables that do not yet have `owner_id`. It backfills ownership from a legacy `created_by` column when available, otherwise from the owning workspace's `created_by`. If a row still cannot be assigned to a valid Supabase Auth user, the migration stops with a clear message instead of guessing.

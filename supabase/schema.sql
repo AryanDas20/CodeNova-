@@ -171,6 +171,50 @@ create table if not exists public.brand_sources (
 alter table public.brand_sources add column if not exists review_due date;
 alter table public.brand_sources add column if not exists updated_at timestamptz not null default now();
 
+-- Upgrade older brand_sources tables that predate owner_id.
+-- Prefer a legacy created_by value when present; otherwise use the workspace creator.
+alter table public.brand_sources add column if not exists owner_id uuid;
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'brand_sources'
+      and column_name = 'created_by'
+  ) then
+    execute $q$
+      update public.brand_sources
+      set owner_id = created_by::uuid
+      where owner_id is null
+        and created_by::text ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    $q$;
+  end if;
+end;
+$$;
+update public.brand_sources s
+set owner_id = w.created_by
+from public.workspaces w
+where s.workspace_id = w.id and s.owner_id is null;
+
+do $$
+begin
+  if exists (select 1 from public.brand_sources where owner_id is null) then
+    raise exception 'Cannot migrate brand_sources.owner_id: one or more sources have no valid workspace creator to use as owner. Set owner_id to a valid auth.users UUID for those rows, then rerun.';
+  end if;
+  if not exists (
+    select 1 from pg_constraint c
+    join pg_attribute a on a.attrelid = c.conrelid and a.attnum = any(c.conkey)
+    where c.conrelid = 'public.brand_sources'::regclass
+      and c.confrelid = 'auth.users'::regclass
+      and c.contype = 'f' and a.attname = 'owner_id'
+  ) then
+    alter table public.brand_sources
+      add constraint brand_sources_owner_auth_fkey
+      foreign key (owner_id) references auth.users(id) on delete restrict;
+  end if;
+end;
+$$;
+alter table public.brand_sources alter column owner_id set not null;
+
 create table if not exists public.reviews (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references public.workspaces(id) on delete cascade,
