@@ -87,12 +87,19 @@ async function callGemini(input: any[], tools?: any[]) {
     requestBody.toolConfig = { functionCallingConfig: { mode: 'AUTO' } };
   }
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`;
+  // Try the configured model first, then a lighter fallback model if the primary
+  // is overloaded or too slow. Keep the total provider wait below Vercel's
+  // 60-second function budget (configured below).
+  const fallbackModel = (env('GEMINI_FALLBACK_MODEL') || 'gemini-3.5-flash-lite').replace(/^models\//, '');
+  const models = [...new Set([GEMINI_MODEL, fallbackModel])];
   let response: Response | null = null;
-  let result: any = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  let lastFailure: Error | null = null;
+
+  for (let modelIndex = 0; modelIndex < models.length; modelIndex++) {
+    const model = models[modelIndex];
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = setTimeout(() => controller.abort(), 20000);
     try {
       response = await fetch(endpoint, {
         method: 'POST',
@@ -101,28 +108,33 @@ async function callGemini(input: any[], tools?: any[]) {
         signal: controller.signal,
       });
     } catch (error) {
-      if (attempt === 1) throw new Error(error instanceof Error && error.name === 'AbortError'
-        ? 'Gemini timed out after 15 seconds. Please try again.'
-        : 'Could not connect to Gemini. Please try again.');
-      await new Promise(resolve => setTimeout(resolve, 700));
-      continue;
+      const timedOut = error instanceof Error && error.name === 'AbortError';
+      lastFailure = new Error(timedOut
+        ? `Gemini model ${model} timed out after 20 seconds.`
+        : `Could not connect to Gemini model ${model}.`);
+      if (modelIndex < models.length - 1) continue;
+      throw new Error('Gemini is taking too long or is temporarily unavailable. Please try again shortly.');
     } finally {
       clearTimeout(timeout);
     }
-    if (response?.ok) break;
-    const errorText = await response!.text();
+
+    if (response.ok) break;
+    const errorText = await response.text();
     let errorJson: any = {};
     try { errorJson = JSON.parse(errorText); } catch {}
-    const message = errorJson?.error?.message || `Gemini returned HTTP ${response!.status}`;
-    if (attempt === 0 && [429, 500, 502, 503, 504].includes(response!.status)) {
-      await new Promise(resolve => setTimeout(resolve, 700));
-      continue;
-    }
-    throw new Error(message);
+    const message = errorJson?.error?.message || `Gemini returned HTTP ${response.status}`;
+    const retryable = [429, 500, 502, 503, 504].includes(response.status);
+    lastFailure = new Error(message);
+    if (retryable && modelIndex < models.length - 1) continue;
+    throw new Error(retryable
+      ? 'Gemini is temporarily overloaded. Please try again in a moment.'
+      : message);
   }
-  if (!response?.ok) throw new Error('Gemini is temporarily unavailable. Please try again.');
 
-  result = await response.json();
+  if (!response?.ok) {
+    throw new Error(lastFailure?.message || 'Gemini is temporarily unavailable. Please try again.');
+  }
+  const result: any = await response.json();
   const parts = result?.candidates?.[0]?.content?.parts || [];
   const functionPart = parts.find((part: any) => part.functionCall);
   if (functionPart?.functionCall) {

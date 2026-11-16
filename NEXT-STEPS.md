@@ -23,6 +23,7 @@ If you have not applied `supabase/schema.sql` yet, back up your database first, 
 |---|---|
 | `GEMINI_API_KEY` | Your private Gemini API key from Google AI Studio |
 | `GEMINI_MODEL` | `gemini-3.8-flash` |
+| `GEMINI_FALLBACK_MODEL` | `gemini-3.5-flash-lite` |
 | `SUPABASE_URL` | `https://egmekbtdurqrpikxfwee.supabase.co` |
 | `SUPABASE_ANON_KEY` | Your Supabase anon/publishable key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Optional; only needed for Agent 37 invitation emails |
@@ -57,5 +58,5 @@ The updated frontend calls `/api/agent-37` on Vercel. It no longer calls the Sup
 - Gemini is called from the Vercel server; the API key is never sent to the browser.
 - Proposed data changes still require explicit confirmation and server-side permission checks.
 - `SUPABASE_SERVICE_ROLE_KEY` is optional and only required for teammate invitation emails.
-- Gemini requests have a bounded timeout and one retry for temporary overload responses. If the provider remains unavailable, Agent 37 returns an error rather than loading indefinitely.
+- Gemini requests have a 20-second per-model timeout. If the primary model is overloaded or times out, Agent 37 tries the configured lighter fallback model (`GEMINI_FALLBACK_MODEL`). Both attempts fit within the Vercel function budget; if both models fail, Agent 37 returns a clear error rather than loading indefinitely.
 
