@@ -1,57 +1,61 @@
-# CodeNova / BASE — deployment checklist
+# CodeNova / BASE — deployment steps
 
-This package contains the static BASE website and the Agent 37 Supabase Edge Function configured for Google Gemini.
+This build keeps **Supabase for authentication and database storage** and runs **Agent 37 on Vercel**. You do not need to deploy Agent 37 as a Supabase Edge Function.
 
-## 1. Deploy Agent 37 (Gemini)
+## 1. Keep the existing Supabase database and authentication
 
-From the project folder:
+The website still uses your existing Supabase project:
 
-```bash
-supabase login
-supabase link --project-ref egmekbtdurqrpikxfwee
-supabase secrets set GEMINI_API_KEY=YOUR_REAL_GEMINI_API_KEY GEMINI_MODEL=gemini-3.8-flash SITE_URL=https://codenova-eight-sandy.vercel.app --project-ref egmekbtdurqrpikxfwee
-supabase functions deploy agent-37 --project-ref egmekbtdurqrpikxfwee
-```
+- Project ref: `egmekbtdurqrpikxfwee`
+- Project URL: `https://egmekbtdurqrpikxfwee.supabase.co`
 
-Replace `YOUR_REAL_GEMINI_API_KEY` with your key from Google AI Studio. Do not paste the key into this project, `config.js`, GitHub, Vercel frontend variables, or chat. Do not include `models/`, a URL, or `:generateContent` in `GEMINI_MODEL`.
+Do not delete your Supabase project or database. Keep the existing schema, Auth providers, redirect URLs and RLS policies.
 
-The function uses the authenticated Supabase user's JWT and workspace membership checks. Do not disable JWT verification or RLS. Supabase supplies its normal Edge Function environment variables. If teammate invitations fail specifically because the service-role key is missing, configure `SUPABASE_SERVICE_ROLE_KEY` as a server-side function secret only.
+If you have not applied `supabase/schema.sql` yet, back up your database first, then inspect and apply the migration carefully. Do not rerun or modify a live schema just for this Agent 37 hosting change.
 
-## 2. Database: do not run migrations blindly
+## 2. Add Vercel Environment Variables
 
-Back up the Supabase project before running SQL. The included `supabase/schema.sql` creates/updates tables, policies, triggers and RPC functions. It includes a legacy conversion of `workspace_members.user_id` to UUID and requires every existing workspace to have a valid `created_by` Auth UUID. If your live database has text IDs that are not UUIDs, legacy ownership values, or a different column layout, the migration can stop with an error.
+1. Open your Vercel dashboard and select the CodeNova project.
+2. Go to **Settings → Environment Variables**.
+3. Add the following variables:
 
-**Do not drop tables, disable RLS, or repeatedly rerun a failed migration.** First inspect the exact SQL error and the existing table columns in Supabase. If you already have production data, send the error and column listing before making schema changes.
+| Name | Value |
+|---|---|
+| `GEMINI_API_KEY` | Your private Gemini API key from Google AI Studio |
+| `GEMINI_MODEL` | `gemini-3.8-flash` |
+| `SUPABASE_URL` | `https://egmekbtdurqrpikxfwee.supabase.co` |
+| `SUPABASE_ANON_KEY` | Your Supabase anon/publishable key |
+| `SUPABASE_SERVICE_ROLE_KEY` | Optional; only needed for Agent 37 invitation emails |
+| `SITE_URL` | `https://codenova-eight-sandy.vercel.app` |
 
-## 3. Supabase Auth settings
+Set the variables for Production and any Preview/Development environments you use. Save them. Do not paste secret values into GitHub, `config.js`, frontend code or chat.
 
-In Supabase Dashboard → Authentication → URL Configuration:
-- Site URL: `https://codenova-eight-sandy.vercel.app`
-- Add redirect URL: `https://codenova-eight-sandy.vercel.app/**`
-- For local testing, add `http://localhost:5500/**`
+Get the Gemini key at https://aistudio.google.com/apikey. Treat the Supabase service-role key as highly sensitive; it must only exist in Vercel server environment variables.
 
-For Google OAuth, enable the provider only after the Google OAuth client ID/secret and Supabase callback URI match. The authorised redirect URI in Google Cloud must be:
+## 3. Deploy the updated project to Vercel
 
-`https://egmekbtdurqrpikxfwee.supabase.co/auth/v1/callback`
+1. Extract this ZIP.
+2. Make sure the Vercel project root is the folder containing `index.html`, `app.js`, `config.js`, `package.json` and `api/agent-37.ts`.
+3. Push these updated files to the GitHub repository connected to Vercel, or upload/import the project through Vercel.
+4. In Vercel Project Settings → General, use **Other** as the Framework Preset.
+5. No build command is required for this static site. Vercel installs the package listed in `package.json` and deploys `api/agent-37.ts` as a server-side function.
+6. Trigger a new deployment after adding or changing environment variables.
 
-Never put the Google OAuth client secret in this ZIP or frontend config.
-
-## 4. Deploy the website
-
-Push the contents of this project folder to the GitHub repository connected to Vercel, or upload the folder to your static host. `config.js` must contain only the Supabase project URL and public anon/publishable key. Never put the service-role key or Gemini API key in browser files.
-
-## 5. Test in this order
+## 4. Test Agent 37
 
 1. Open `https://codenova-eight-sandy.vercel.app`.
-2. Sign up/sign in using Supabase Auth.
-3. Create a workspace.
-4. Open Agent 37 and send `Hi`.
-5. Ask `Explain the review queue`.
-6. Test review analysis only after adding approved source material.
-7. If a request fails, open Supabase → Edge Functions → `agent-37` → Logs and share the newest error text. Never share API keys.
+2. Sign in with your existing Supabase account.
+3. Open Agent 37 and send: `Explain the review queue`.
+4. If it fails, open Vercel → Project → Logs/Functions and inspect `/api/agent-37`.
 
-## Important
+The updated frontend calls `/api/agent-37` on Vercel. It no longer calls the Supabase `agent-37` Edge Function. The old Supabase deployment may remain there unused; you do not need to delete it.
 
-- A successful Edge Function deployment does not prove that the API key, model access, database schema, RLS policies or frontend deployment are correct. Test each workflow after deployment.
-- Do not use `git push --force` to resolve Git conflicts.
-- The app starts with an empty workspace; it does not insert fake people, reviews, sources or analytics.
+## 5. Important behaviour
+
+- Supabase remains responsible for sign-in, workspace membership, RLS and database records.
+- Agent 37 validates the Supabase access token on the Vercel server.
+- Gemini is called from the Vercel server; the API key is never sent to the browser.
+- Proposed data changes still require explicit confirmation and server-side permission checks.
+- `SUPABASE_SERVICE_ROLE_KEY` is optional and only required for teammate invitation emails.
+- Gemini requests have a bounded timeout and one retry for temporary overload responses. If the provider remains unavailable, Agent 37 returns an error rather than loading indefinitely.
+

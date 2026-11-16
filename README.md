@@ -23,15 +23,19 @@ For the exact deployment sequence for this Supabase project, follow **[NEXT-STEP
 
 ## Run locally
 
-This is a static ES-module website. Do not open `index.html` directly from the file system; serve it over HTTP.
+This is a static ES-module website with a Vercel API route. Do not open `index.html` directly from the file system.
+
+For a quick UI-only preview, run:
 
 ```bash
 python -m http.server 5500
 ```
 
-Then open `http://localhost:5500`.
+Then open `http://localhost:5500`. This simple static preview does not run the `/api/agent-37` backend.
 
-The website runs in the empty guest preview until Supabase is configured. The guest assistant handles greetings, product help and local page navigation; authenticated AI answers and workspace actions require signing in and deploying the Edge Function. No records are generated locally or inserted as placeholders.
+To test the full app and Agent 37 locally, install the dependencies, link the Vercel project, pull its development environment variables into `.env.local`, then run `npx vercel dev`. Open the local URL printed by Vercel.
+
+The guest assistant handles greetings, product help and local page navigation. Authenticated AI answers and workspace actions require sign-in and the deployed (or locally running) Vercel API route. No records are generated locally or inserted as placeholders.
 
 ## 1. Create and configure Supabase
 
@@ -58,54 +62,54 @@ The project uses **Supabase Auth for both Google and email sign-in**. This is de
 
 Do not enable public/anonymous read access to workspace tables. Do not disable RLS to “fix” permission errors. The browser contains only the Supabase anon/publishable key; the database policies remain the security boundary.
 
-## 2. Set up Agent 37 (AI)
+## 2. Set up Agent 37 on Vercel (Gemini)
 
-Agent 37 runs in a Supabase Edge Function so the model API key and privileged invitation credentials never reach the browser. In guest preview, the assistant can greet visitors, explain the product and navigate locally; it does not call the private AI model or access workspace records until a user signs in. This avoids exposing an unauthenticated public AI endpoint.
+Agent 37 now runs as a Vercel server-side API route at `/api/agent-37`. The browser sends the signed-in Supabase access token to this route. The route verifies the user with Supabase Auth, checks workspace membership and permissions, then calls Gemini. The Gemini key and Supabase service-role key remain server-side and are never placed in `app.js` or `config.js`.
 
-Install the Supabase CLI, log in and link your project from this folder. Then deploy the function:
+### Vercel Environment Variables
 
-```bash
-supabase login
-supabase link --project-ref YOUR_PROJECT_REF
-supabase functions deploy agent-37 --project-ref egmekbtdurqrpikxfwee
-```
+In Vercel, open **Project → Settings → Environment Variables** and add:
 
-Set the function secrets (the default model is Gemini 3.8 Flash):
+| Variable | Required | Value |
+|---|---|---|
+| `GEMINI_API_KEY` | Yes | Your key from Google AI Studio |
+| `GEMINI_MODEL` | No | `gemini-3.8-flash` |
+| `SUPABASE_URL` | Yes | `https://egmekbtdurqrpikxfwee.supabase.co` |
+| `SUPABASE_ANON_KEY` | Yes | The Supabase anon/publishable key from Project Settings → API |
+| `SUPABASE_SERVICE_ROLE_KEY` | Only for invitations | Supabase service-role/secret key; keep private |
+| `SITE_URL` | Recommended | Your deployed Vercel site URL, used for invitation redirects |
 
-```bash
-supabase secrets set GEMINI_API_KEY=YOUR_GEMINI_API_KEY
-supabase secrets set GEMINI_MODEL=gemini-3.8-flash
-supabase secrets set SITE_URL=https://your-deployed-domain.example
-```
+Apply the variables to **Production**, **Preview**, and **Development** as appropriate. After saving or changing environment variables, redeploy the Vercel project so the deployment receives them.
 
-`SUPABASE_URL`, `SUPABASE_ANON_KEY` and the Edge Function's service-role environment are supplied by the Supabase runtime in normal hosted deployment. For teammate invitations, ensure `SUPABASE_SERVICE_ROLE_KEY` is available as an Edge Function secret in your project. Never add it to `config.js`.
+Get the Gemini key from [Google AI Studio](https://aistudio.google.com/apikey). Never commit it, put it in `config.js`, expose it in browser code, or paste it into chat. The `.env.example` file documents the names only; it contains placeholders, not working secrets.
 
-After deployment, open **Supabase → Edge Functions → agent-37 → Logs** and keep the logs visible while testing. Sign in to the website, create a workspace, then send Agent 37 a simple message such as “Explain the review queue”. If it fails, copy the exact Edge Function log error; do not expose or paste any API keys.
+### Deploy
 
-The function has three modes:
+The repository root should contain `index.html`, `app.js`, `config.js`, `styles.css`, `package.json`, and the `api/` folder. Vercel detects `api/agent-37.ts` as a server-side function. No Supabase CLI command or Supabase Edge Function secret is required for Agent 37.
 
-- `chat`: answers questions using the active workspace context and may propose an allowlisted website operation.
-- `execute`: performs a supported operation only when the request includes `confirmed: true`, the user is authenticated, the user belongs to the workspace and the required role is present.
-- `analyze`: checks a text draft against approved sources in the active workspace. If no sources exist, it returns no findings and explains why.
+1. Import the GitHub repository into Vercel (or open the existing Vercel project connected to it).
+2. Set **Root Directory** to the folder containing `index.html` and `api/agent-37.ts`.
+3. Leave the Framework Preset as **Other**. No build command is required; the website is static and Vercel serves the API route from `api/`.
+4. Add the environment variables above.
+5. Deploy or redeploy.
 
-### Agent 37 confirmation model
+The website continues to use Supabase Auth and the Supabase database for login, workspaces, reviews, sources, roles and audit records. Only the Agent 37 AI endpoint moves to Vercel. The old Supabase Edge Function can remain deployed but the updated frontend no longer calls it.
 
-A tool call from the AI is only a **proposal**. The frontend displays the proposed change, the user can cancel it, and the server independently validates the action and the user's role when the user confirms. The supported allowlist is intentionally limited to BASE operations; it cannot control the user's computer, send arbitrary external messages, publish content, change other accounts or run arbitrary code.
+### Test Agent 37
 
-Actions currently supported:
+1. Open the deployed Vercel site and sign in.
+2. Open Agent 37 and send: `Explain the review queue`.
+3. If it fails, open Vercel → Project → **Logs** or **Functions** and inspect `/api/agent-37`.
+4. A missing `GEMINI_API_KEY` or Supabase variable is reported as a configuration error. Gemini overload errors are retried once and then returned as a visible error instead of leaving the chat spinner running indefinitely.
 
-- Navigate to an internal BASE page.
-- Update the signed-in user's display name.
-- Create a review or approved source.
-- Change an existing review status using the reviewer RPC (including separation-of-duties checks for approval).
-- Invite a teammate by email (workspace admin only).
-- Add a comment, delete an eligible review, or rename the workspace.
+### Security and behaviour
 
-The Agent 37 model can be changed with the `GEMINI_MODEL` Edge Function secret. The default is `gemini-3.8-flash`, called through Google's Gemini `generateContent` API. Set `GEMINI_API_KEY` only as a Supabase Edge Function secret; never put it in `config.js`, frontend environment variables, GitHub, or chat.
-
-## 3. Deploy the website
-
-Upload the contents of this folder to any static host that supports HTTPS and ES modules, such as Netlify, Vercel static hosting, Cloudflare Pages or GitHub Pages. Configure the same site URL in Supabase Auth redirect settings and the `SITE_URL` Edge Function secret. Keep `config.js` limited to the Supabase project URL and anon/publishable key.
+- Every request must include a valid Supabase Auth access token.
+- Workspace membership and role checks remain server-side.
+- Mutating Agent 37 actions remain proposals until the user confirms them; the server checks permissions again before applying them.
+- `SUPABASE_SERVICE_ROLE_KEY` is optional and is only needed for admin invitation emails. It must never be exposed to the browser.
+- `GEMINI_API_KEY` is only read from Vercel's server environment.
+- The API has a 60-second Vercel function maximum duration, a 15-second per-attempt Gemini timeout and one retry for temporary provider overload/network errors.
 
 ## What is not represented as complete yet
 
@@ -116,7 +120,7 @@ These boundaries are intentional; the interface does not pretend they are ready:
 - **External browsing and computer control:** Agent 37 only operates the listed BASE website tools.
 - **Compliance certification:** AI findings and insight summaries assist reviewers; they do not certify legal, security or regulatory compliance.
 - **Tamper-proof audit:** the browser can append but not update/delete events through the included RLS policies. Regulated use should add database triggers / trusted server-only audit writes and a retention policy.
-- **Invitation email delivery:** requires Supabase Auth email/SMTP configuration and the Edge Function service-role secret. The invited person is added to membership after signing in with the invited email.
+- **Invitation email delivery:** requires Supabase Auth email/SMTP configuration and the Vercel `SUPABASE_SERVICE_ROLE_KEY` environment variable. The invited person is added to membership after signing in with the invited email.
 
 ## Important production checks
 
@@ -129,10 +133,10 @@ index.html
 styles.css
 app.js
 config.js
-README.md
+package.json
+.env.example
+api/
+  agent-37.ts
 supabase/
   schema.sql
-  functions/
-    agent-37/
-      index.ts
 ```

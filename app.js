@@ -10,9 +10,35 @@ const state = {
   loading: false, edgeAvailable: false, reducedMotion: false
 };
 
+async function invokeAgent37(body) {
+  if (!state.db) throw new Error('Supabase is not configured.');
+  const { data: sessionData, error: sessionError } = await state.db.auth.getSession();
+  if (sessionError) throw sessionError;
+  const accessToken = sessionData?.session?.access_token;
+  if (!accessToken) throw new Error('Your sign-in session has expired. Sign in again.');
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 33000);
+  try {
+    const response = await fetch('/api/agent-37', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data?.error) throw new Error(data?.error || `Agent 37 returned HTTP ${response.status}.`);
+    return { data, error: null };
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error('Agent 37 timed out after 33 seconds. Please try again.');
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 const featureHelp = {
   overview: 'Overview displays only live counts and records from the active workspace. It stays empty until you create a workspace and add real data.',
-  reviews: 'The review queue stores drafts, source-based findings, comments and reviewer decisions. Agent 37 can analyse text after its secure Edge Function is configured.',
+  reviews: 'The review queue stores drafts, source-based findings, comments and reviewer decisions. Agent 37 can analyse text after its secure Vercel API is configured.',
   sources: 'The source library stores approved facts, policies, terminology and brand rules. The AI can only cite sources that belong to the active workspace.',
   insights: 'Insights aggregate the findings stored with real review records. The page does not generate sample analytics.',
   team: 'Team & roles shows actual workspace members. Creator, reviewer, brand owner and admin roles have different permissions.',
@@ -559,17 +585,15 @@ $('#reviewForm').addEventListener('submit', async event => {
   button.disabled = true; button.innerHTML = '<span class="spinner"></span> Saving review…';
   let findings = [];
   let analysisNote = 'AI analysis is not configured. The draft was saved without invented findings.';
-  if (state.db.functions) {
+  if (state.db) {
     try {
-      const { data, error } = await state.db.functions.invoke('agent-37', {
-        body: { mode: 'analyze', workspace_id: state.workspace.id, draft: { title, content, channel } }
-      });
+      const { data, error } = await invokeAgent37({ mode: 'analyze', workspace_id: state.workspace.id, draft: { title, content, channel } });
       if (!error && data?.findings) {
         findings = data.findings;
         analysisNote = data.note || 'Analysis completed against current workspace sources.';
         state.edgeAvailable = true;
       } else if (error) {
-        analysisNote = `AI analysis unavailable: ${error.message || 'Function not deployed or not configured.'}`;
+        analysisNote = `AI analysis unavailable: ${error.message || 'Vercel API not deployed or not configured.'}`;
       }
     } catch (error) { analysisNote = `AI analysis unavailable: ${error.message}`; }
   }
@@ -666,7 +690,7 @@ async function openReviewDetail(reviewId) {
   });
 }
 
-// Invite a teammate: a user-confirmed action sent by the protected Edge Function.
+// Invite a teammate: a user-confirmed action sent by the protected Vercel API.
 $('#inviteMemberButton').addEventListener('click', () => {
   if (!requireUser()) return;
   if (state.role !== 'admin') return toast('Only workspace administrators can invite teammates.', 'warning');
@@ -678,15 +702,13 @@ $('#inviteForm').addEventListener('submit', async event => {
   const email = $('#inviteEmail').value.trim(); const role = $('#inviteRole').value;
   const button = $('button[type="submit"]', event.currentTarget); button.disabled = true;
   try {
-    const { data, error } = await state.db.functions.invoke('agent-37', {
-      body: { mode: 'execute', workspace_id: state.workspace.id, confirmed: true, action: { name: 'invite_member', args: { email, role } } }
-    });
+    const { data, error } = await invokeAgent37({ mode: 'execute', workspace_id: state.workspace.id, confirmed: true, action: { name: 'invite_member', args: { email, role } } });
     if (error) throw error;
     if (data?.error) throw new Error(data.error);
     await logEvent('member_invited', { email, role });
     closeModal('inviteModal'); event.currentTarget.reset();
     toast(data?.message || `Invitation sent to ${email}.`, 'success');
-  } catch (error) { toast(`Invitation unavailable: ${error.message}. Check Edge Function secrets and email delivery.`, 'error'); }
+  } catch (error) { toast(`Invitation unavailable: ${error.message}. Check Vercel environment variables and Supabase email delivery.`, 'error'); }
   finally { button.disabled = false; }
 });
 
@@ -757,7 +779,7 @@ $('#motionSwitch').addEventListener('click', () => {
   document.body.classList.toggle('reduced-motion', state.reducedMotion); syncPreferenceButtons();
 });
 
-// Agent 37: preview answers are local feature help; authenticated requests go to a secure Edge Function.
+// Agent 37: preview answers are local feature help; authenticated requests go to the secure Vercel API.
 function openAgent() {
   $('#agentBackdrop').classList.add('open'); $('#agentDrawer').classList.add('open');
   $('#agentDrawer').setAttribute('aria-hidden', 'false');
@@ -816,9 +838,7 @@ async function executeAgentProposal(card, button) {
   button.disabled = true; button.textContent = 'Applying…';
   const proposal = state.pendingAgent;
   try {
-    const { data, error } = await state.db.functions.invoke('agent-37', {
-      body: { mode: 'execute', confirmed: true, workspace_id: state.workspace?.id || null, action: proposal }
-    });
+    const { data, error } = await invokeAgent37({ mode: 'execute', confirmed: true, workspace_id: state.workspace?.id || null, action: proposal });
     if (error) throw error;
     if (data?.error) throw new Error(data.error);
     state.pendingAgent = null; card.remove();
@@ -853,7 +873,7 @@ function guestAgentReply(message) {
   }
   if (lower.includes('username') || lower.includes('display name')) return 'To change your display name, sign in, open Settings, edit “Your profile” and save. You can also ask me to change it after Agent 37 is connected to your authenticated workspace. I will ask you to confirm before applying it.';
   if (lower.includes('google') || lower.includes('login') || lower.includes('sign in')) return 'Use the Sign in button to continue with Google or email and password. Google OAuth must be enabled in your Supabase project and its redirect URL must include this site domain.';
-  if (lower.includes('agent 37') || /\bai\b/.test(lower)) return 'Agent 37 is designed to answer workspace questions, navigate pages and prepare supported actions such as changing your display name, creating reviews or sources, inviting a teammate and updating review status. It needs the secure Edge Function and a server-side AI API key. Every data-changing action is presented for confirmation.';
+  if (lower.includes('agent 37') || /\bai\b/.test(lower)) return 'Agent 37 is designed to answer workspace questions, navigate pages and prepare supported actions such as changing your display name, creating reviews or sources, inviting a teammate and updating review status. It needs the secure Vercel API endpoint and a server-side Gemini API key. Every data-changing action is presented for confirmation.';
   const section = routes.find(([, terms]) => terms.some(term => lower.includes(term)));
   if (section) return featureHelp[section[0]];
   return 'I can help you explore BASE in this preview. I don’t have access to private account or workspace records until you sign in, but I can explain how the product works. Try asking about reviews, approved sources, insights, team roles, audit history or Agent 37—or tell me which page you want to open.';
@@ -867,9 +887,7 @@ async function sendAgentMessage() {
   const waiting = addAgentMessage('Thinking through your request…'); waiting.classList.add('thinking');
   $('#agentSend').disabled = true;
   try {
-    const { data, error } = await state.db.functions.invoke('agent-37', {
-      body: { mode: 'chat', workspace_id: state.workspace?.id || null, message }
-    });
+    const { data, error } = await invokeAgent37({ mode: 'chat', workspace_id: state.workspace?.id || null, message });
     waiting.remove();
     if (error) throw error;
     if (data?.error) throw new Error(data.error);
@@ -880,7 +898,7 @@ async function sendAgentMessage() {
   } catch (error) {
     waiting.remove();
     const detail = error?.message || error?.context?.message || 'Unknown connection error';
-    const hint = /401|unauthori[sz]ed|jwt|token/i.test(detail) ? 'Your sign-in session may have expired. Sign out and sign in again.' : /404|not found|function/i.test(detail) ? 'Deploy the agent-37 Edge Function in Supabase.' : /GEMINI_API_KEY|api key|model|provider|429|quota|billing/i.test(detail) ? 'Check GEMINI_API_KEY and GEMINI_MODEL in Supabase Edge Function secrets, and verify your Google AI Studio API key quota.' : 'Check the Supabase function logs and your network connection.';
+    const hint = /401|unauthori[sz]ed|jwt|token/i.test(detail) ? 'Your sign-in session may have expired. Sign out and sign in again.' : /404|not found|function/i.test(detail) ? 'Check that the Vercel deployment includes api/agent-37.ts.' : /GEMINI_API_KEY|api key|model|provider|429|quota|billing|temporarily unavailable/i.test(detail) ? 'Check GEMINI_API_KEY and GEMINI_MODEL in Vercel Project Settings → Environment Variables.' : 'Check the Vercel deployment logs and your network connection.';
     addAgentMessage(`I couldn’t reach the Agent 37 service.
 
 Details: ${detail}

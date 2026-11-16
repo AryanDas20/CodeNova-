@@ -1,19 +1,22 @@
 # Database migration notes — CodeNova / BASE
 
-The included `supabase/schema.sql` is a compatibility-sensitive schema script, not a guaranteed one-click migration for every historical BASE database.
+This ZIP replaces the previous schema migration with an additive compatibility migration based on the actual column listing supplied for the existing Supabase project.
 
-## What the included SQL expects
+## What changed
 
-- `workspace_members.user_id` must be convertible to a Supabase Auth UUID. The script currently casts this column to `uuid`; non-UUID legacy values will cause the migration to stop.
-- Every existing workspace must have a valid Auth UUID in `created_by`, or in the legacy `owner_id` field where that field is text and contains a UUID belonging to `auth.users`.
-- The app-facing tables and columns used by `app.js` and Agent 37 must match the schema definitions.
+- No `ALTER COLUMN ... TYPE uuid` is performed on legacy text identity fields.
+- `brand_sources` receives `name`, `body`, and `owner_id`, backfilled from `title`, `content`, and `created_by`.
+- `reviews` receives `owner_uid` and `channel`, with `owner_uid` backfilled from `submitted_by`.
+- `review_events` receives `actor_uid`, backfilled from `actor_id`.
+- `review_comments` receives `user_id` (UUID). Existing `author_id` values are mapped only when they have UUID syntax; other legacy values are preserved in `author_id`.
+- Browser and Agent 37 inserts populate both new app-facing columns and the legacy NOT NULL columns where needed.
+- RLS policies compare text owner/actor values to `auth.uid()::text`; workspace membership continues to use UUIDs.
 
-## Before applying
+## Apply
 
-1. Back up the Supabase project.
-2. Inspect the existing table definitions and sample identifier formats.
-3. If the live project contains non-UUID text identifiers or different legacy columns, do not run the script unchanged. Map those records deliberately first.
-4. Run the script in Supabase SQL Editor only after confirming the assumptions above.
-5. If SQL reports an error, stop. Do not drop tables, disable RLS, or repeatedly rerun the migration. Preserve the full error message.
+1. Back up the Supabase project before changing its schema.
+2. Open Supabase → SQL Editor → New query.
+3. Run the complete `supabase/schema.sql` file once.
+4. If Supabase reports any error, stop and share the exact error. Do not run the old migration and do not drop tables.
 
-This package has not been executed against the hosted production database. Static code checks cannot validate the live schema, existing data, OAuth configuration, RLS policies or API secrets.
+This migration has been checked against the supplied column listing and the frontend JavaScript passed `node --check`. It has not been executed against the hosted Supabase database, so the live project may still reveal constraints or policies not visible in the supplied column listing.
