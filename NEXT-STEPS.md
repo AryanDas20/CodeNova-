@@ -10,7 +10,7 @@ This folder is the updated CodeNova project.
 4. Wait for `Success`. The schema does not insert demo records.
 5. If SQL Editor reports an error, stop and send the exact error text. Do not disable RLS or delete tables.
 
-The schema includes compatibility handling for the older workspace schema. It requires every `workspace_members.user_id` and `workspaces.created_by` to match a real Supabase Auth UUID. Firebase Auth UIDs cannot be used directly; the migration stops without deleting rows when legacy IDs cannot be mapped. It also stops if old membership roles are outside `creator`, `brand_owner`, `reviewer` and `admin`.
+The schema is an additive compatibility migration for the actual existing tables. It adds `brand_sources.name/body/owner_id`, `reviews.owner_uid/channel`, `review_events.actor_uid`, and `review_comments.user_id`, backfilling from the old columns where possible. It deliberately does not cast `brand_sources.created_by`, `reviews.submitted_by`, `review_events.actor_id`, or `review_comments.author_id` from text to UUID, and it does not drop existing tables. New app writes use the signed-in Supabase Auth UUID in text form for owner/actor fields. `workspace_members.user_id` and `workspaces.created_by` remain UUIDs.
 
 ## B. Confirm Supabase Auth
 

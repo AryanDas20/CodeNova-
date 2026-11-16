@@ -130,7 +130,8 @@ async function executeAction({ userClient, serviceClient, user, workspaceId, act
   const event = async (eventType: string, details: Record<string, unknown>, reviewId: string | null = null) => {
     if (!workspaceId) return;
     const { error } = await userClient.from('review_events').insert({
-      workspace_id: workspaceId, review_id: reviewId, actor_uid: user.id,
+      workspace_id: workspaceId, review_id: reviewId,
+      actor_id: user.id, actor_uid: user.id,
       event_type: eventType, details,
     });
     if (error) console.error('Audit event insert failed:', error.message);
@@ -150,8 +151,8 @@ async function executeAction({ userClient, serviceClient, user, workspaceId, act
       const channel = String(args.channel || '').trim().slice(0, 80);
       if (title.length < 2 || title.length > 160 || !content || content.length > 30000) throw new Error('Review title or content is outside the allowed length.');
       const { data, error } = await userClient.from('reviews').insert({
-        workspace_id: workspaceId, owner_uid: user.id, title, channel,
-        content, status: 'Needs review', findings: [],
+        workspace_id: workspaceId, owner_uid: user.id, submitted_by: user.id,
+        title, channel, content, status: 'Needs review', findings: [],
       }).select('id,title').single();
       if (error) throw error;
       await event('review_submitted', { title, channel, created_by_agent: true }, data.id);
@@ -164,8 +165,11 @@ async function executeAction({ userClient, serviceClient, user, workspaceId, act
       const typeValue = String(args.source_type || 'Other').trim().slice(0, 80);
       if (nameValue.length < 2 || nameValue.length > 160 || !bodyValue || bodyValue.length > 30000) throw new Error('Source name or body is outside the allowed length.');
       const { data, error } = await userClient.from('brand_sources').insert({
-        workspace_id: workspaceId, name: nameValue, source_type: typeValue,
-        body: bodyValue, owner_id: user.id,
+        workspace_id: workspaceId,
+        // Keep legacy columns populated for databases upgraded in place.
+        title: nameValue, content: bodyValue, created_by: user.id,
+        name: nameValue, source_type: typeValue, body: bodyValue,
+        owner_id: user.id,
       }).select('id,name').single();
       if (error) throw error;
       await event('source_added', { name: nameValue, source_type: typeValue, created_by_agent: true });
@@ -220,7 +224,10 @@ async function executeAction({ userClient, serviceClient, user, workspaceId, act
       if (!comment || comment.length > 4000) throw new Error('Comment must be 1–4000 characters.');
       const { data: review, error: readError } = await userClient.from('reviews').select('id,title').eq('id', reviewId).single();
       if (readError) throw readError;
-      const { error } = await userClient.from('review_comments').insert({ workspace_id: workspaceId, review_id: reviewId, user_id: user.id, body: comment });
+      const { error } = await userClient.from('review_comments').insert({
+        workspace_id: workspaceId, review_id: reviewId,
+        user_id: user.id, author_id: user.id, body: comment
+      });
       if (error) throw error;
       await event('comment_added', { title: review.title, comment: comment.slice(0, 120) }, reviewId);
       return { message: `Added your comment to “${review.title}”.`, navigate: 'reviews' };

@@ -36,7 +36,7 @@ The website runs in the empty guest preview until Supabase is configured. The gu
 ## 1. Create and configure Supabase
 
 1. Create a Supabase project.
-2. Open **SQL Editor** and run the full `supabase/schema.sql` script in this ZIP. It creates the tables, indexes, profile bootstrap trigger, RPC functions and row-level security policies. It includes a compatibility repair for the earlier prototype (`workspace_members.user_id` text, `workspaces.owner_id` text, and missing `profiles`). It does not seed demo data. The migration stops with a clear error if legacy Firebase/non-Supabase IDs or unsupported roles cannot be matched to Supabase Auth users; those memberships must be mapped before rerunning. If you already ran the short repair SQL supplied during setup, this full script is designed to be safe to run afterward; do not run it while any workspace rows have a missing/invalid owner mapping.
+2. Open **SQL Editor** and run the full `supabase/schema.sql` script in this ZIP. It creates missing tables, adds the app-facing columns that were missing from the existing prototype, backfills them from legacy columns, and installs the RPC functions and RLS policies. It does not drop tables or cast existing text identity columns to UUID. Existing `workspace_members.user_id` and `workspaces.created_by` remain Supabase Auth UUIDs; legacy creator/author IDs remain text and are compared to the signed-in Supabase Auth UUID as text. The migration is written for the actual earlier schema (`brand_sources.title/content/created_by`, `reviews.submitted_by`, `review_events.actor_id`, and `review_comments.author_id`). It does not seed demo data.
 3. In **Project Settings → API**, copy the Project URL and the anon/publishable key.
 4. Put those two public values in `config.js`:
 
@@ -54,7 +54,7 @@ export const supabaseConfig = {
 
 ### Identity and database security
 
-The project uses **Supabase Auth for both Google and email sign-in**. This is deliberate: Supabase Auth JWTs are the identity used by the database's `auth.uid()` RLS rules. The previous starter mixed Firebase Auth with Supabase RLS; those two user IDs do not automatically match, which can cause permission failures even when the Firebase login succeeds.
+The project uses **Supabase Auth for both Google and email sign-in**. This is deliberate: Supabase Auth JWTs are the identity used by the database's `auth.uid()` RLS rules. App-facing owner/actor fields are stored as text in the compatibility schema so the existing prototype's text IDs can be retained; new writes store the signed-in Supabase Auth UUID in text form. Workspace membership and workspace creator fields remain UUIDs. Do not switch the browser to Firebase Auth or cast the legacy text fields to UUID.
 
 Do not enable public/anonymous read access to workspace tables. Do not disable RLS to “fix” permission errors. The browser contains only the Supabase anon/publishable key; the database policies remain the security boundary.
 
@@ -148,7 +148,3 @@ npm run serve
 ```
 
 For local Agent 37 testing, copy `supabase/functions/.env.example` to `supabase/functions/.env`, add your own OpenAI API key, then run `supabase functions serve agent-37 --env-file supabase/functions/.env` after starting the local Supabase stack. The `.env` file is ignored by Git. The hosted function keeps JWT verification enabled.
-
-
-### SQL migration note (updated)
-The schema now upgrades older `brand_sources` tables that do not yet have `owner_id`. It backfills ownership from a legacy `created_by` column when available, otherwise from the owning workspace's `created_by`. If a row still cannot be assigned to a valid Supabase Auth user, the migration stops with a clear message instead of guessing.

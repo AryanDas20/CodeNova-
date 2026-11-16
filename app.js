@@ -556,7 +556,8 @@ function fillSettings() {
 async function logEvent(eventType, details = {}, reviewId = null) {
   if (!state.db || !state.user || !state.workspace) return;
   const { error } = await state.db.from('review_events').insert({
-    workspace_id: state.workspace.id, review_id: reviewId, actor_uid: state.user.id,
+    workspace_id: state.workspace.id, review_id: reviewId,
+    actor_id: state.user.id, actor_uid: state.user.id,
     event_type: eventType, details
   });
   if (error) console.warn('Audit event could not be saved:', error.message);
@@ -663,8 +664,8 @@ $('#reviewForm').addEventListener('submit', async event => {
   }
   try {
     const { data: review, error } = await state.db.from('reviews').insert({
-      workspace_id: state.workspace.id, owner_uid: state.user.id, title, channel,
-      content, status: 'Needs review', findings
+      workspace_id: state.workspace.id, owner_uid: state.user.id, submitted_by: state.user.id,
+      title, channel, content, status: 'Needs review', findings
     }).select().single();
     if (error) throw error;
     await logEvent('review_submitted', { title, channel, findings: findings.length }, review.id);
@@ -687,9 +688,13 @@ $('#sourceForm').addEventListener('submit', async event => {
   if (!requireUser()) return;
   if (!currentRoleCanManageSources()) return toast('You do not have permission to manage approved sources.', 'error');
   const button = $('button[type="submit"]', event.currentTarget); button.disabled = true;
+  const sourceName = $('#sourceName').value.trim();
+  const sourceBody = $('#sourceBody').value.trim();
   const source = {
-    workspace_id: state.workspace.id, name: $('#sourceName').value.trim(),
-    source_type: $('#sourceType').value, body: $('#sourceBody').value.trim(),
+    workspace_id: state.workspace.id,
+    // Keep the legacy columns populated for databases upgraded in place.
+    title: sourceName, content: sourceBody, created_by: state.user.id,
+    name: sourceName, source_type: $('#sourceType').value, body: sourceBody,
     owner_id: state.user.id, review_due: $('#sourceDue').value || null
   };
   try {
@@ -730,7 +735,10 @@ async function openReviewDetail(reviewId) {
   $('#commentForm').addEventListener('submit', async event => {
     event.preventDefault();
     const body = $('#newComment').value.trim(); if (!body) return;
-    const { error } = await state.db.from('review_comments').insert({ review_id: review.id, workspace_id: state.workspace.id, user_id: state.user.id, body });
+    const { error } = await state.db.from('review_comments').insert({
+    review_id: review.id, workspace_id: state.workspace.id,
+    user_id: state.user.id, author_id: state.user.id, body
+  });
     if (error) return toast(`Could not add comment: ${error.message}`, 'error');
     await logEvent('comment_added', { title: review.title, comment: body.slice(0, 120) }, review.id);
     await openReviewDetail(review.id); await loadWorkspaceData(); renderAll();
