@@ -1,210 +1,119 @@
--- BASE (Brand Governance Platform)
--- Supabase PostgreSQL schema for Firebase Authentication users.
--- Firebase project: base-7bdb4
--- Supabase project ref: egmekbtdurqrpikxfwee
---
--- IMPORTANT:
--- 1. This script is for a NEW/EMPTY BASE database. Do not run it over an existing
---    production schema without a backup and migration review.
--- 2. Firebase users must have the custom JWT claim { "role": "authenticated" }
---    before they can use Supabase Data API tables under these policies.
---    This SQL does NOT assign Firebase custom claims.
--- 3. Never put a Firebase service-account private key or Supabase service_role
---    key in browser JavaScript.
-
-begin;
+-- BASE: secure Supabase schema + migration from the original starter schema.
+-- Run this entire script in Supabase SQL Editor. It creates no demo/sample records.
 
 create extension if not exists pgcrypto;
 
--- -----------------------------------------------------------------------------
--- Firebase UID is a TEXT value in JWT claim "sub", not a PostgreSQL UUID.
--- Restrict accepted tokens to this Firebase project.
--- Table-dependent helper functions are defined after the tables below.
--- -----------------------------------------------------------------------------
-
-create or replace function public.base_firebase_uid()
-returns text
-language sql
-stable
-security invoker
-set search_path = ''
-as $$
-  select case
-    when (auth.jwt() ->> 'iss') = 'https://securetoken.google.com/base-7bdb4'
-     and (auth.jwt() ->> 'aud') = 'base-7bdb4'
-     and (auth.jwt() ->> 'role') = 'authenticated'
-    then nullif(auth.jwt() ->> 'sub', '')
-    else null
-  end;
-$$;
-
-grant execute on function public.base_firebase_uid() to authenticated;
-
--- -----------------------------------------------------------------------------
--- Core tables
--- -----------------------------------------------------------------------------
-
+-- Core workspace boundary.
 create table if not exists public.workspaces (
   id uuid primary key default gen_random_uuid(),
-  name text not null check (length(trim(name)) between 2 and 120),
-  owner_id text not null default public.base_firebase_uid(),
+  name text not null check (char_length(name) between 2 and 80),
+  created_by uuid not null references auth.users(id) on delete restrict,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 create table if not exists public.workspace_members (
-  id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references public.workspaces(id) on delete cascade,
-  user_id text not null,
-  role text not null default 'viewer'
-    check (role in ('owner', 'admin', 'editor', 'reviewer', 'viewer')),
-  invited_email text,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  role text not null check (role in ('creator', 'brand_owner', 'reviewer', 'admin')),
   joined_at timestamptz not null default now(),
-  unique (workspace_id, user_id)
+  primary key (workspace_id, user_id)
+);
+
+-- Upgrade fields when running against the original BASE prototype schema.
+alter table public.workspaces add column if not exists updated_at timestamptz not null default now();
+alter table public.workspace_members add column if not exists joined_at timestamptz not null default now();
+
+create table if not exists public.profiles (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  username text not null check (char_length(username) between 2 and 32),
+  avatar_url text,
+  updated_at timestamptz not null default now()
 );
 
 create table if not exists public.brand_sources (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references public.workspaces(id) on delete cascade,
-  title text not null check (length(trim(title)) between 1 and 200),
-  source_type text not null default 'guideline'
-    check (source_type in ('guideline', 'document', 'url', 'note', 'asset')),
-  content text,
-  source_url text,
-  storage_path text,
-  metadata jsonb not null default '{}'::jsonb,
-  created_by text not null default public.base_firebase_uid(),
+  name text not null check (char_length(name) between 2 and 160),
+  source_type text not null,
+  body text not null,
+  version text not null default 'v1.0',
+  owner_id uuid not null references auth.users(id) on delete restrict,
+  review_due date,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.brand_sources add column if not exists review_due date;
+alter table public.brand_sources add column if not exists updated_at timestamptz not null default now();
 
 create table if not exists public.reviews (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references public.workspaces(id) on delete cascade,
-  title text not null check (length(trim(title)) between 1 and 240),
-  content text,
-  content_type text not null default 'text'
-    check (content_type in ('text', 'image', 'document', 'social_post', 'other')),
-  status text not null default 'pending'
-    check (status in ('draft', 'pending', 'in_review', 'approved', 'rejected', 'changes_requested')),
+  owner_uid uuid not null references auth.users(id) on delete restrict,
+  title text not null check (char_length(title) between 2 and 160),
+  channel text,
+  content text not null,
+  status text not null default 'Needs review' check (status in ('Needs review', 'In progress', 'Changes requested', 'Approved', 'On hold')),
   findings jsonb not null default '[]'::jsonb,
-  suggestions jsonb not null default '[]'::jsonb,
-  submitted_by text not null default public.base_firebase_uid(),
-  assigned_to text,
-  reviewed_by text,
-  reviewed_at timestamptz,
+  brand_pack_version text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.reviews add column if not exists updated_at timestamptz not null default now();
+alter table public.reviews alter column findings set default '[]'::jsonb;
 
--- Append-only activity records. Client-side inserts are still not authoritative;
--- for high-trust audit events, write them from a trusted server/Edge Function.
+-- Audit events are append-only from authenticated clients. A NULL review_id is allowed
+-- for workspace-level events such as profile changes, invitations and source additions.
 create table if not exists public.review_events (
   id uuid primary key default gen_random_uuid(),
-  workspace_id uuid not null references public.workspaces(id) on delete cascade,
+  workspace_id uuid references public.workspaces(id) on delete cascade,
   review_id uuid references public.reviews(id) on delete set null,
-  actor_id text not null default public.base_firebase_uid(),
-  event_type text not null check (length(trim(event_type)) between 1 and 80),
+  actor_uid uuid not null references auth.users(id) on delete restrict,
+  event_type text not null,
   details jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
+alter table public.review_events add column if not exists workspace_id uuid references public.workspaces(id) on delete cascade;
+alter table public.review_events alter column review_id drop not null;
+alter table public.review_events drop constraint if exists review_events_review_id_fkey;
+alter table public.review_events add constraint review_events_review_id_fkey
+  foreign key (review_id) references public.reviews(id) on delete set null;
+update public.review_events e
+set workspace_id = r.workspace_id
+from public.reviews r
+where e.review_id = r.id and e.workspace_id is null;
 
 create table if not exists public.review_comments (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references public.workspaces(id) on delete cascade,
   review_id uuid not null references public.reviews(id) on delete cascade,
-  author_id text not null default public.base_firebase_uid(),
-  body text not null check (length(trim(body)) between 1 and 10000),
+  user_id uuid not null references auth.users(id) on delete restrict,
+  body text not null check (char_length(body) between 1 and 4000),
   created_at timestamptz not null default now()
 );
 
-create table if not exists public.review_versions (
+create table if not exists public.workspace_invitations (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references public.workspaces(id) on delete cascade,
-  review_id uuid not null references public.reviews(id) on delete cascade,
-  version_number integer not null check (version_number > 0),
-  content_snapshot text,
-  findings_snapshot jsonb not null default '[]'::jsonb,
-  changed_by text not null default public.base_firebase_uid(),
-  change_note text,
+  invited_email text not null,
+  role text not null check (role in ('creator', 'reviewer', 'brand_owner')),
+  invited_by uuid not null references auth.users(id) on delete restrict,
+  status text not null default 'pending' check (status in ('pending', 'accepted', 'revoked')),
   created_at timestamptz not null default now(),
-  unique (review_id, version_number)
+  accepted_at timestamptz
 );
+create unique index if not exists workspace_invites_pending_email
+  on public.workspace_invitations (workspace_id, lower(invited_email)) where status = 'pending';
 
--- SECURITY DEFINER helpers avoid recursive RLS evaluation on workspace_members.
-create or replace function public.base_is_workspace_member(p_workspace_id uuid)
-returns boolean
-language sql
-stable
-security definer
-set search_path = ''
-as $$
-  select exists (
-    select 1
-    from public.workspace_members wm
-    where wm.workspace_id = p_workspace_id
-      and wm.user_id = public.base_firebase_uid()
-  );
-$$;
+create index if not exists workspace_members_user_idx on public.workspace_members(user_id);
+create index if not exists brand_sources_workspace_idx on public.brand_sources(workspace_id, created_at desc);
+create index if not exists reviews_workspace_idx on public.reviews(workspace_id, updated_at desc);
+create index if not exists review_events_workspace_idx on public.review_events(workspace_id, created_at desc);
+create index if not exists review_comments_review_idx on public.review_comments(review_id, created_at);
 
-create or replace function public.base_is_workspace_owner(p_workspace_id uuid)
-returns boolean
-language sql
-stable
-security definer
-set search_path = ''
-as $$
-  select exists (
-    select 1
-    from public.workspaces w
-    where w.id = p_workspace_id
-      and w.owner_id = public.base_firebase_uid()
-  );
-$$;
-
-create or replace function public.base_has_workspace_role(
-  p_workspace_id uuid,
-  p_allowed_roles text[]
-)
-returns boolean
-language sql
-stable
-security definer
-set search_path = ''
-as $$
-  select exists (
-    select 1
-    from public.workspace_members wm
-    where wm.workspace_id = p_workspace_id
-      and wm.user_id = public.base_firebase_uid()
-      and wm.role = any (p_allowed_roles)
-  );
-$$;
-
-revoke all on function public.base_firebase_uid() from public, anon;
-revoke all on function public.base_is_workspace_member(uuid) from public, anon;
-revoke all on function public.base_is_workspace_owner(uuid) from public, anon;
-revoke all on function public.base_has_workspace_role(uuid, text[]) from public, anon;
-revoke all on function public.base_is_workspace_member(uuid) from public, anon;
-revoke all on function public.base_is_workspace_owner(uuid) from public, anon;
-revoke all on function public.base_has_workspace_role(uuid, text[]) from public, anon;
-grant execute on function public.base_is_workspace_member(uuid) to authenticated;
-grant execute on function public.base_is_workspace_owner(uuid) to authenticated;
-grant execute on function public.base_has_workspace_role(uuid, text[]) to authenticated;
-
-create index if not exists idx_workspace_members_user on public.workspace_members(user_id);
-create index if not exists idx_brand_sources_workspace on public.brand_sources(workspace_id);
-create index if not exists idx_reviews_workspace_status on public.reviews(workspace_id, status);
-create index if not exists idx_reviews_submitted_by on public.reviews(submitted_by);
-create index if not exists idx_review_events_workspace_created on public.review_events(workspace_id, created_at desc);
-create index if not exists idx_review_comments_review_created on public.review_comments(review_id, created_at);
-create index if not exists idx_review_versions_review_number on public.review_versions(review_id, version_number desc);
-
--- Keep updated_at current on editable records.
-create or replace function public.base_set_updated_at()
-returns trigger
-language plpgsql
-set search_path = ''
+-- Updated-at helper.
+create or replace function public.touch_updated_at()
+returns trigger language plpgsql set search_path = public
 as $$
 begin
   new.updated_at = now();
@@ -212,204 +121,252 @@ begin
 end;
 $$;
 
-drop trigger if exists trg_workspaces_updated_at on public.workspaces;
-create trigger trg_workspaces_updated_at before update on public.workspaces
-for each row execute function public.base_set_updated_at();
+drop trigger if exists workspaces_touch_updated_at on public.workspaces;
+create trigger workspaces_touch_updated_at before update on public.workspaces
+for each row execute function public.touch_updated_at();
+drop trigger if exists profiles_touch_updated_at on public.profiles;
+create trigger profiles_touch_updated_at before update on public.profiles
+for each row execute function public.touch_updated_at();
+drop trigger if exists brand_sources_touch_updated_at on public.brand_sources;
+create trigger brand_sources_touch_updated_at before update on public.brand_sources
+for each row execute function public.touch_updated_at();
+drop trigger if exists reviews_touch_updated_at on public.reviews;
+create trigger reviews_touch_updated_at before update on public.reviews
+for each row execute function public.touch_updated_at();
 
-drop trigger if exists trg_brand_sources_updated_at on public.brand_sources;
-create trigger trg_brand_sources_updated_at before update on public.brand_sources
-for each row execute function public.base_set_updated_at();
+-- Auth profile bootstrap. The browser also performs an idempotent upsert for older accounts.
+create or replace function public.handle_new_auth_user()
+returns trigger language plpgsql security definer set search_path = public
+as $$
+declare
+  display_name text;
+begin
+  display_name := coalesce(new.raw_user_meta_data ->> 'username', new.raw_user_meta_data ->> 'full_name', split_part(new.email, '@', 1), 'New member');
+  if char_length(display_name) < 2 then display_name := 'New member'; end if;
+  insert into public.profiles(user_id, username)
+  values (new.id, left(display_name, 32))
+  on conflict (user_id) do nothing;
+  return new;
+end;
+$$;
 
-drop trigger if exists trg_reviews_updated_at on public.reviews;
-create trigger trg_reviews_updated_at before update on public.reviews
-for each row execute function public.base_set_updated_at();
+drop trigger if exists on_auth_user_created_profile on auth.users;
+create trigger on_auth_user_created_profile
+after insert on auth.users for each row execute function public.handle_new_auth_user();
 
--- -----------------------------------------------------------------------------
--- Row Level Security
--- -----------------------------------------------------------------------------
+-- Security-definer helpers prevent RLS recursion while checking membership.
+create or replace function public.is_workspace_member(wid uuid)
+returns boolean language sql stable security definer set search_path = public
+as $$
+  select exists (
+    select 1 from public.workspace_members m
+    where m.workspace_id = wid and m.user_id = auth.uid()
+  );
+$$;
 
+create or replace function public.is_workspace_admin(wid uuid)
+returns boolean language sql stable security definer set search_path = public
+as $$
+  select exists (
+    select 1 from public.workspace_members m
+    where m.workspace_id = wid and m.user_id = auth.uid() and m.role = 'admin'
+  );
+$$;
+
+create or replace function public.is_workspace_source_manager(wid uuid)
+returns boolean language sql stable security definer set search_path = public
+as $$
+  select exists (
+    select 1 from public.workspace_members m
+    where m.workspace_id = wid and m.user_id = auth.uid() and m.role in ('brand_owner', 'admin')
+  );
+$$;
+
+create or replace function public.is_workspace_reviewer(wid uuid)
+returns boolean language sql stable security definer set search_path = public
+as $$
+  select exists (
+    select 1 from public.workspace_members m
+    where m.workspace_id = wid and m.user_id = auth.uid() and m.role in ('reviewer', 'brand_owner', 'admin')
+  );
+$$;
+
+create or replace function public.is_workspace_colleague(other_user uuid)
+returns boolean language sql stable security definer set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.workspace_members mine
+    join public.workspace_members theirs on theirs.workspace_id = mine.workspace_id
+    where mine.user_id = auth.uid() and theirs.user_id = other_user
+  );
+$$;
+
+-- Create the first workspace and its administrator membership atomically.
+create or replace function public.create_workspace(p_name text)
+returns uuid language plpgsql security definer set search_path = public
+as $$
+declare
+  new_workspace_id uuid;
+begin
+  if auth.uid() is null then raise exception 'Sign in is required'; end if;
+  if p_name is null or char_length(trim(p_name)) < 2 or char_length(trim(p_name)) > 80 then
+    raise exception 'Workspace name must be 2 to 80 characters';
+  end if;
+  insert into public.workspaces(name, created_by)
+  values (trim(p_name), auth.uid())
+  returning id into new_workspace_id;
+  insert into public.workspace_members(workspace_id, user_id, role)
+  values (new_workspace_id, auth.uid(), 'admin');
+  return new_workspace_id;
+end;
+$$;
+
+-- Accept workspace invitations after the invited user signs in with the invited email.
+create or replace function public.accept_pending_workspace_invitations()
+returns integer language plpgsql security definer set search_path = public
+as $$
+declare
+  accepted_count integer;
+  user_email text;
+begin
+  if auth.uid() is null then return 0; end if;
+  user_email := lower(coalesce(auth.jwt() ->> 'email', ''));
+  if user_email = '' then return 0; end if;
+  insert into public.workspace_members(workspace_id, user_id, role)
+  select i.workspace_id, auth.uid(), i.role
+  from public.workspace_invitations i
+  where lower(i.invited_email) = user_email and i.status = 'pending'
+  on conflict (workspace_id, user_id) do nothing;
+  update public.workspace_invitations
+  set status = 'accepted', accepted_at = now()
+  where lower(invited_email) = user_email and status = 'pending';
+  get diagnostics accepted_count = row_count;
+  return accepted_count;
+end;
+$$;
+
+-- Review decisions are recorded through this RPC, not by arbitrary status updates.
+create or replace function public.set_review_status(p_review_id uuid, p_status text)
+returns uuid language plpgsql security definer set search_path = public
+as $$
+declare
+  review_row public.reviews%rowtype;
+begin
+  if auth.uid() is null then raise exception 'Sign in is required'; end if;
+  if p_status not in ('Needs review', 'In progress', 'Changes requested', 'Approved', 'On hold') then
+    raise exception 'Invalid review status';
+  end if;
+  select * into review_row from public.reviews where id = p_review_id;
+  if not found or not public.is_workspace_member(review_row.workspace_id) then
+    raise exception 'Review not found or access denied';
+  end if;
+  if not public.is_workspace_reviewer(review_row.workspace_id) then
+    raise exception 'Reviewer permission is required';
+  end if;
+  if p_status = 'Approved' and review_row.owner_uid = auth.uid() then
+    raise exception 'A creator cannot approve their own submission';
+  end if;
+  update public.reviews set status = p_status where id = p_review_id;
+  insert into public.review_events(workspace_id, review_id, actor_uid, event_type, details)
+  values (review_row.workspace_id, review_row.id, auth.uid(), 'review_decision', jsonb_build_object('title', review_row.title, 'status', p_status));
+  return p_review_id;
+end;
+$$;
+
+-- Row-level security.
 alter table public.workspaces enable row level security;
 alter table public.workspace_members enable row level security;
+alter table public.profiles enable row level security;
 alter table public.brand_sources enable row level security;
 alter table public.reviews enable row level security;
 alter table public.review_events enable row level security;
 alter table public.review_comments enable row level security;
-alter table public.review_versions enable row level security;
+alter table public.workspace_invitations enable row level security;
 
--- Workspaces: a Firebase user can create a workspace for themselves.
+-- Remove policies from the original prototype before creating the controlled set.
+drop policy if exists "members can read own workspace" on public.workspaces;
+drop policy if exists "members can read membership" on public.workspace_members;
+drop policy if exists "members can read sources" on public.brand_sources;
+drop policy if exists "owners manage sources" on public.brand_sources;
+drop policy if exists "members read reviews" on public.reviews;
+drop policy if exists "members create reviews" on public.reviews;
+drop policy if exists "review owner or reviewer update" on public.reviews;
 drop policy if exists workspaces_select_member on public.workspaces;
-create policy workspaces_select_member on public.workspaces
-for select to authenticated
-using (owner_id = (select public.base_firebase_uid())
-       or (select public.base_is_workspace_member(id)));
-
-drop policy if exists workspaces_insert_owner on public.workspaces;
-create policy workspaces_insert_owner on public.workspaces
-for insert to authenticated
-with check (owner_id = (select public.base_firebase_uid()));
-
-drop policy if exists workspaces_update_owner on public.workspaces;
-create policy workspaces_update_owner on public.workspaces
-for update to authenticated
-using (owner_id = (select public.base_firebase_uid()))
-with check (owner_id = (select public.base_firebase_uid()));
-
-drop policy if exists workspaces_delete_owner on public.workspaces;
-create policy workspaces_delete_owner on public.workspaces
-for delete to authenticated
-using (owner_id = (select public.base_firebase_uid()));
-
--- Memberships: only the workspace owner can add/change/remove members.
-drop policy if exists workspace_members_select_member on public.workspace_members;
-create policy workspace_members_select_member on public.workspace_members
-for select to authenticated
-using ((select public.base_is_workspace_member(workspace_id))
-       or (select public.base_is_workspace_owner(workspace_id)));
-
-drop policy if exists workspace_members_insert_owner on public.workspace_members;
-create policy workspace_members_insert_owner on public.workspace_members
-for insert to authenticated
-with check ((select public.base_is_workspace_owner(workspace_id)));
-
-drop policy if exists workspace_members_update_owner on public.workspace_members;
-create policy workspace_members_update_owner on public.workspace_members
-for update to authenticated
-using ((select public.base_is_workspace_owner(workspace_id)))
-with check ((select public.base_is_workspace_owner(workspace_id)));
-
-drop policy if exists workspace_members_delete_owner on public.workspace_members;
-create policy workspace_members_delete_owner on public.workspace_members
-for delete to authenticated
-using ((select public.base_is_workspace_owner(workspace_id)));
-
--- Brand source library.
-drop policy if exists brand_sources_select_member on public.brand_sources;
-create policy brand_sources_select_member on public.brand_sources
-for select to authenticated
-using ((select public.base_is_workspace_member(workspace_id))
-       or (select public.base_is_workspace_owner(workspace_id)));
-
-drop policy if exists brand_sources_insert_editor on public.brand_sources;
-create policy brand_sources_insert_editor on public.brand_sources
-for insert to authenticated
-with check (
-  created_by = (select public.base_firebase_uid())
-  and (select public.base_has_workspace_role(workspace_id, array['owner','admin','editor']))
-);
-
-drop policy if exists brand_sources_update_editor on public.brand_sources;
-create policy brand_sources_update_editor on public.brand_sources
-for update to authenticated
-using ((select public.base_has_workspace_role(workspace_id, array['owner','admin','editor'])))
-with check ((select public.base_has_workspace_role(workspace_id, array['owner','admin','editor'])));
-
-drop policy if exists brand_sources_delete_editor on public.brand_sources;
-create policy brand_sources_delete_editor on public.brand_sources
-for delete to authenticated
-using ((select public.base_has_workspace_role(workspace_id, array['owner','admin','editor'])));
-
--- Reviews: workspace members can read; submitters can edit their own;
--- owners/admins/reviewers can edit review records for their workspace.
+drop policy if exists workspaces_update_admin on public.workspaces;
+drop policy if exists members_select_workspace on public.workspace_members;
+drop policy if exists profiles_select_colleague on public.profiles;
+drop policy if exists profiles_insert_self on public.profiles;
+drop policy if exists profiles_update_self on public.profiles;
+drop policy if exists sources_select_member on public.brand_sources;
+drop policy if exists sources_insert_manager on public.brand_sources;
+drop policy if exists sources_update_manager on public.brand_sources;
+drop policy if exists sources_delete_manager on public.brand_sources;
 drop policy if exists reviews_select_member on public.reviews;
-create policy reviews_select_member on public.reviews
-for select to authenticated
-using ((select public.base_is_workspace_member(workspace_id))
-       or (select public.base_is_workspace_owner(workspace_id)));
-
 drop policy if exists reviews_insert_member on public.reviews;
+drop policy if exists reviews_update_owner on public.reviews;
+drop policy if exists reviews_delete_owner_or_admin on public.reviews;
+drop policy if exists events_select_member on public.review_events;
+drop policy if exists events_insert_member on public.review_events;
+drop policy if exists comments_select_member on public.review_comments;
+drop policy if exists comments_insert_member on public.review_comments;
+drop policy if exists invitations_select_admin on public.workspace_invitations;
+drop policy if exists "members read review events" on public.review_events;
+
+create policy workspaces_select_member on public.workspaces
+for select to authenticated using (public.is_workspace_member(id));
+create policy workspaces_update_admin on public.workspaces
+for update to authenticated using (public.is_workspace_admin(id)) with check (public.is_workspace_admin(id));
+
+create policy members_select_workspace on public.workspace_members
+for select to authenticated using (user_id = auth.uid() or public.is_workspace_member(workspace_id));
+
+create policy profiles_select_colleague on public.profiles
+for select to authenticated using (user_id = auth.uid() or public.is_workspace_colleague(user_id));
+create policy profiles_insert_self on public.profiles
+for insert to authenticated with check (user_id = auth.uid());
+create policy profiles_update_self on public.profiles
+for update to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+create policy sources_select_member on public.brand_sources
+for select to authenticated using (public.is_workspace_member(workspace_id));
+create policy sources_insert_manager on public.brand_sources
+for insert to authenticated with check (owner_id = auth.uid() and public.is_workspace_source_manager(workspace_id));
+create policy sources_update_manager on public.brand_sources
+for update to authenticated using (public.is_workspace_source_manager(workspace_id)) with check (public.is_workspace_source_manager(workspace_id));
+create policy sources_delete_manager on public.brand_sources
+for delete to authenticated using (public.is_workspace_source_manager(workspace_id));
+
+create policy reviews_select_member on public.reviews
+for select to authenticated using (public.is_workspace_member(workspace_id));
 create policy reviews_insert_member on public.reviews
-for insert to authenticated
-with check (
-  submitted_by = (select public.base_firebase_uid())
-  and ((select public.base_is_workspace_member(workspace_id))
-       or (select public.base_is_workspace_owner(workspace_id)))
-);
+for insert to authenticated with check (owner_uid = auth.uid() and public.is_workspace_member(workspace_id));
+create policy reviews_update_owner on public.reviews
+for update to authenticated using (owner_uid = auth.uid() and public.is_workspace_member(workspace_id)) with check (owner_uid = auth.uid() and public.is_workspace_member(workspace_id));
+create policy reviews_delete_owner_or_admin on public.reviews
+for delete to authenticated using (public.is_workspace_member(workspace_id) and (owner_uid = auth.uid() or public.is_workspace_admin(workspace_id)));
 
-drop policy if exists reviews_update_submitter_or_reviewer on public.reviews;
-create policy reviews_update_submitter_or_reviewer on public.reviews
-for update to authenticated
-using (
-  submitted_by = (select public.base_firebase_uid())
-  or (select public.base_has_workspace_role(workspace_id, array['owner','admin','reviewer']))
-)
-with check (
-  (select public.base_is_workspace_member(workspace_id))
-  or (select public.base_is_workspace_owner(workspace_id))
-);
+create policy events_select_member on public.review_events
+for select to authenticated using (public.is_workspace_member(workspace_id));
+create policy events_insert_member on public.review_events
+for insert to authenticated with check (actor_uid = auth.uid() and public.is_workspace_member(workspace_id));
 
-drop policy if exists reviews_delete_submitter_or_admin on public.reviews;
-create policy reviews_delete_submitter_or_admin on public.reviews
-for delete to authenticated
-using (
-  submitted_by = (select public.base_firebase_uid())
-  or (select public.base_has_workspace_role(workspace_id, array['owner','admin']))
-);
+create policy comments_select_member on public.review_comments
+for select to authenticated using (public.is_workspace_member(workspace_id));
+create policy comments_insert_member on public.review_comments
+for insert to authenticated with check (user_id = auth.uid() and public.is_workspace_member(workspace_id));
 
--- Activity history: readable by workspace members, insert-only for clients.
-drop policy if exists review_events_select_member on public.review_events;
-create policy review_events_select_member on public.review_events
-for select to authenticated
-using ((select public.base_is_workspace_member(workspace_id))
-       or (select public.base_is_workspace_owner(workspace_id)));
+create policy invitations_select_admin on public.workspace_invitations
+for select to authenticated using (public.is_workspace_admin(workspace_id));
 
-drop policy if exists review_events_insert_member on public.review_events;
-create policy review_events_insert_member on public.review_events
-for insert to authenticated
-with check (
-  actor_id = (select public.base_firebase_uid())
-  and ((select public.base_is_workspace_member(workspace_id))
-       or (select public.base_is_workspace_owner(workspace_id)))
-);
+-- Prevent browser clients from editing review status directly; the set_review_status RPC
+-- enforces reviewer rights and separation of duties.
+revoke update on public.reviews from authenticated;
+grant update (title, channel, content) on public.reviews to authenticated;
+grant execute on function public.create_workspace(text) to authenticated;
+grant execute on function public.accept_pending_workspace_invitations() to authenticated;
+grant execute on function public.set_review_status(uuid, text) to authenticated;
 
--- No UPDATE or DELETE policy is intentionally created for review_events.
-
--- Comments: members can read; users can add comments as themselves.
-drop policy if exists review_comments_select_member on public.review_comments;
-create policy review_comments_select_member on public.review_comments
-for select to authenticated
-using ((select public.base_is_workspace_member(workspace_id))
-       or (select public.base_is_workspace_owner(workspace_id)));
-
-drop policy if exists review_comments_insert_member on public.review_comments;
-create policy review_comments_insert_member on public.review_comments
-for insert to authenticated
-with check (
-  author_id = (select public.base_firebase_uid())
-  and ((select public.base_is_workspace_member(workspace_id))
-       or (select public.base_is_workspace_owner(workspace_id)))
-);
-
--- No UPDATE or DELETE policy is intentionally created for comments.
-
--- Revision snapshots: members can read and create; snapshots cannot be edited/deleted.
-drop policy if exists review_versions_select_member on public.review_versions;
-create policy review_versions_select_member on public.review_versions
-for select to authenticated
-using ((select public.base_is_workspace_member(workspace_id))
-       or (select public.base_is_workspace_owner(workspace_id)));
-
-drop policy if exists review_versions_insert_member on public.review_versions;
-create policy review_versions_insert_member on public.review_versions
-for insert to authenticated
-with check (
-  changed_by = (select public.base_firebase_uid())
-  and ((select public.base_is_workspace_member(workspace_id))
-       or (select public.base_is_workspace_owner(workspace_id)))
-);
-
--- Explicit table privileges; RLS remains the row-level security boundary.
-grant select, insert, update, delete on public.workspaces to authenticated;
-grant select, insert, update, delete on public.workspace_members to authenticated;
-grant select, insert, update, delete on public.brand_sources to authenticated;
-grant select, insert, update, delete on public.reviews to authenticated;
-grant select, insert on public.review_events to authenticated;
-grant select, insert on public.review_comments to authenticated;
-grant select, insert on public.review_versions to authenticated;
-
-commit;
-
--- After creating the first workspace, add its owner as a member using the same
--- Firebase UID. Example (replace the placeholders; run while authenticated in
--- your app, not as an unauthenticated SQL Editor query):
--- insert into public.workspace_members (workspace_id, user_id, role)
--- values ('WORKSPACE_UUID', 'FIREBASE_UID', 'owner');
+-- Review-event records have no UPDATE or DELETE policies by design.
+-- Invitation inserts are performed by the trusted Edge Function with the service-role key.
+-- Never place the service-role key or AI provider key in config.js / browser assets.
