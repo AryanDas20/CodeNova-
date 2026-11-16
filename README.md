@@ -70,11 +70,11 @@ supabase link --project-ref YOUR_PROJECT_REF
 supabase functions deploy agent-37 --project-ref egmekbtdurqrpikxfwee
 ```
 
-Set the function secrets (the default model is GPT-6.1 Sol; choose a model enabled for your API account):
+Set the function secrets (the default model is Gemini 3.8 Flash):
 
 ```bash
-supabase secrets set OPENAI_API_KEY=YOUR_OPENAI_API_KEY
-supabase secrets set OPENAI_MODEL=gpt-6.1-sol
+supabase secrets set GEMINI_API_KEY=YOUR_GEMINI_API_KEY
+supabase secrets set GEMINI_MODEL=gemini-3.8-flash
 supabase secrets set SITE_URL=https://your-deployed-domain.example
 ```
 
@@ -101,7 +101,7 @@ Actions currently supported:
 - Invite a teammate by email (workspace admin only).
 - Add a comment, delete an eligible review, or rename the workspace.
 
-The Agent 37 model can be changed with the `OPENAI_MODEL` Edge Function secret. GPT-6.1 Sol is the default for complex tool-using work; the function uses the Responses API and medium reasoning effort by default. You may override that with `OPENAI_REASONING_EFFORT` (for example `high`). The API key is only stored server-side.
+The Agent 37 model can be changed with the `GEMINI_MODEL` Edge Function secret. The default is `gemini-3.8-flash`, called through Google's Gemini `generateContent` API. Set `GEMINI_API_KEY` only as a Supabase Edge Function secret; never put it in `config.js`, frontend environment variables, GitHub, or chat.
 
 ## 3. Deploy the website
 

@@ -880,7 +880,7 @@ async function sendAgentMessage() {
   } catch (error) {
     waiting.remove();
     const detail = error?.message || error?.context?.message || 'Unknown connection error';
-    const hint = /401|unauthori[sz]ed|jwt|token/i.test(detail) ? 'Your sign-in session may have expired. Sign out and sign in again.' : /404|not found|function/i.test(detail) ? 'Deploy the agent-37 Edge Function in Supabase.' : /OPENAI_API_KEY|api key|model|provider|429|quota|billing/i.test(detail) ? 'Check the OPENAI_API_KEY, OPENAI_MODEL and OpenAI project billing in Supabase Edge Function secrets.' : 'Check the Supabase function logs and your network connection.';
+    const hint = /401|unauthori[sz]ed|jwt|token/i.test(detail) ? 'Your sign-in session may have expired. Sign out and sign in again.' : /404|not found|function/i.test(detail) ? 'Deploy the agent-37 Edge Function in Supabase.' : /GEMINI_API_KEY|api key|model|provider|429|quota|billing/i.test(detail) ? 'Check GEMINI_API_KEY and GEMINI_MODEL in Supabase Edge Function secrets, and verify your Google AI Studio API key quota.' : 'Check the Supabase function logs and your network connection.';
     addAgentMessage(`I couldn’t reach the Agent 37 service.
 
 Details: ${detail}
