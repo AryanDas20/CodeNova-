@@ -17,7 +17,7 @@ async function invokeAgent37(body) {
   const accessToken = sessionData?.session?.access_token;
   if (!accessToken) throw new Error('Your sign-in session has expired. Sign in again.');
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 33000);
+  const timeout = window.setTimeout(() => controller.abort(), 58000);
   try {
     const response = await fetch('/api/agent-37', {
       method: 'POST',
@@ -29,7 +29,7 @@ async function invokeAgent37(body) {
     if (!response.ok || data?.error) throw new Error(data?.error || `Agent 37 returned HTTP ${response.status}.`);
     return { data, error: null };
   } catch (error) {
-    if (error?.name === 'AbortError') throw new Error('Agent 37 timed out after 33 seconds. Please try again.');
+    if (error?.name === 'AbortError') throw new Error('Agent 37 timed out after 58 seconds. Please try again.');
     throw error;
   } finally {
     window.clearTimeout(timeout);
@@ -873,7 +873,7 @@ function guestAgentReply(message) {
   }
   if (lower.includes('username') || lower.includes('display name')) return 'To change your display name, sign in, open Settings, edit “Your profile” and save. You can also ask me to change it after Agent 37 is connected to your authenticated workspace. I will ask you to confirm before applying it.';
   if (lower.includes('google') || lower.includes('login') || lower.includes('sign in')) return 'Use the Sign in button to continue with Google or email and password. Google OAuth must be enabled in your Supabase project and its redirect URL must include this site domain.';
-  if (lower.includes('agent 37') || /\bai\b/.test(lower)) return 'Agent 37 is designed to answer workspace questions, navigate pages and prepare supported actions such as changing your display name, creating reviews or sources, inviting a teammate and updating review status. It needs the secure Vercel API endpoint and a server-side Gemini API key. Every data-changing action is presented for confirmation.';
+  if (lower.includes('agent 37') || /\bai\b/.test(lower)) return 'Agent 37 is designed to answer workspace questions, navigate pages and prepare supported actions such as changing your display name, creating reviews or sources, inviting a teammate and updating review status. It needs the secure Vercel API endpoint connected to your Agent 37 Cloud instance. Every data-changing action is presented for confirmation.';
   const section = routes.find(([, terms]) => terms.some(term => lower.includes(term)));
   if (section) return featureHelp[section[0]];
   return 'I can help you explore BASE in this preview. I don’t have access to private account or workspace records until you sign in, but I can explain how the product works. Try asking about reviews, approved sources, insights, team roles, audit history or Agent 37—or tell me which page you want to open.';
@@ -898,7 +898,7 @@ async function sendAgentMessage() {
   } catch (error) {
     waiting.remove();
     const detail = error?.message || error?.context?.message || 'Unknown connection error';
-    const hint = /401|unauthori[sz]ed|jwt|token/i.test(detail) ? 'Your sign-in session may have expired. Sign out and sign in again.' : /404|not found|function/i.test(detail) ? 'Check that the Vercel deployment includes api/agent-37.ts.' : /GEMINI_API_KEY|api key|model|provider|429|quota|billing|temporarily unavailable/i.test(detail) ? 'Check GEMINI_API_KEY and GEMINI_MODEL in Vercel Project Settings → Environment Variables.' : 'Check the Vercel deployment logs and your network connection.';
+    const hint = /401|unauthori[sz]ed|jwt|token/i.test(detail) ? 'Your sign-in session may have expired. Sign out and sign in again.' : /404|not found|function/i.test(detail) ? 'Check that the Vercel deployment includes api/agent-37.ts.' : /AGENT37_API_KEY|AGENT37_INSTANCE_ID|api key|instance|unauthori[sz]ed|temporarily unavailable/i.test(detail) ? 'Check AGENT37_API_KEY and AGENT37_INSTANCE_ID in Vercel Project Settings → Environment Variables.' : 'Check the Vercel deployment logs and your network connection.';
     addAgentMessage(`I couldn’t reach the Agent 37 service.
 
 Details: ${detail}

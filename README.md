@@ -62,9 +62,9 @@ The project uses **Supabase Auth for both Google and email sign-in**. This is de
 
 Do not enable public/anonymous read access to workspace tables. Do not disable RLS to “fix” permission errors. The browser contains only the Supabase anon/publishable key; the database policies remain the security boundary.
 
-## 2. Set up Agent 37 on Vercel (Gemini)
+## 2. Connect Agent 37 Cloud on Vercel
 
-Agent 37 now runs as a Vercel server-side API route at `/api/agent-37`. The browser sends the signed-in Supabase access token to this route. The route verifies the user with Supabase Auth, checks workspace membership and permissions, then calls Gemini. The Gemini key and Supabase service-role key remain server-side and are never placed in `app.js` or `config.js`.
+Agent 37 now runs as a Vercel server-side API route at `/api/agent-37`. The browser sends the signed-in Supabase access token to this route. The route verifies the user with Supabase Auth, checks workspace membership and permissions, then calls your Agent 37 Cloud Hermes instance at `https://{AGENT37_INSTANCE_ID}.agent37.app/v1/responses`. It authenticates with the server-side `X-Agent37-Key` header. The Agent 37 key and Supabase service-role key remain server-side and are never placed in `app.js` or `config.js`.
 
 ### Vercel Environment Variables
 
@@ -72,8 +72,9 @@ In Vercel, open **Project → Settings → Environment Variables** and add:
 
 | Variable | Required | Value |
 |---|---|---|
-| `GEMINI_API_KEY` | Yes | Your key from Google AI Studio |
-| `GEMINI_MODEL` | No | `gemini-3.8-flash` |
+| `AGENT37_INSTANCE_ID` | Yes | `0pudhehb78` (your BASE instance) |
+| `AGENT37_INSTANCE_URL` | No | `https://0pudhehb78.agent37.app` |
+| `AGENT37_API_KEY` | Yes | Your Agent 37 Cloud `sk_live_...` key |
 | `SUPABASE_URL` | Yes | `https://egmekbtdurqrpikxfwee.supabase.co` |
 | `SUPABASE_ANON_KEY` | Yes | The Supabase anon/publishable key from Project Settings → API |
 | `SUPABASE_SERVICE_ROLE_KEY` | Only for invitations | Supabase service-role/secret key; keep private |
@@ -81,7 +82,7 @@ In Vercel, open **Project → Settings → Environment Variables** and add:
 
 Apply the variables to **Production**, **Preview**, and **Development** as appropriate. After saving or changing environment variables, redeploy the Vercel project so the deployment receives them.
 
-Get the Gemini key from [Google AI Studio](https://aistudio.google.com/apikey). Never commit it, put it in `config.js`, expose it in browser code, or paste it into chat. The `.env.example` file documents the names only; it contains placeholders, not working secrets.
+Create or copy your Agent 37 Cloud API key from [Agent 37 API keys](https://www.agent37.com/dashboard/cloud/api-keys). Keep it server-side in Vercel. Never commit it, put it in `config.js`, expose it in browser code, or paste it into chat. The `.env.example` file documents the names only; it contains placeholders, not working secrets.
 
 ### Deploy
 
@@ -100,7 +101,7 @@ The website continues to use Supabase Auth and the Supabase database for login, 
 1. Open the deployed Vercel site and sign in.
 2. Open Agent 37 and send: `Explain the review queue`.
 3. If it fails, open Vercel → Project → **Logs** or **Functions** and inspect `/api/agent-37`.
-4. A missing `GEMINI_API_KEY` or Supabase variable is reported as a configuration error. Gemini overload errors are retried once and then returned as a visible error instead of leaving the chat spinner running indefinitely.
+4. A missing Agent 37 Cloud or Supabase variable is reported as a configuration error. Agent 37 Cloud errors are returned as visible messages instead of leaving the chat spinner running indefinitely.
 
 ### Security and behaviour
 
@@ -108,8 +109,8 @@ The website continues to use Supabase Auth and the Supabase database for login, 
 - Workspace membership and role checks remain server-side.
 - Mutating Agent 37 actions remain proposals until the user confirms them; the server checks permissions again before applying them.
 - `SUPABASE_SERVICE_ROLE_KEY` is optional and is only needed for admin invitation emails. It must never be exposed to the browser.
-- `GEMINI_API_KEY` is only read from Vercel's server environment.
-- The API has a 60-second Vercel function maximum duration, a 15-second per-attempt Gemini timeout and one retry for temporary provider overload/network errors.
+- `AGENT37_API_KEY` is only read from Vercel's server environment and is sent to the instance using `X-Agent37-Key`.
+- The API has a 60-second Vercel function maximum duration and a bounded 55-second request timeout for Agent 37 Cloud.
 
 ## What is not represented as complete yet
 
