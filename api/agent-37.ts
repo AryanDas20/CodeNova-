@@ -381,7 +381,7 @@ export default async function handler(req: any, res: any) {
       global: { headers: { Authorization: authHeader } },
       auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
     });
-    const accessToken = authHeader.replace(/^Bearer\\s+/i, '');
+    const accessToken = authHeader.replace(/^Bearer\s+/i, '');
     const { data: userData, error: userError } = await userClient.auth.getUser(accessToken);
     if (userError || !userData.user) return res.status(401).json({ error: 'Your session is invalid or expired. Sign in again.' });
     const user = userData.user;
