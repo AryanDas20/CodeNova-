@@ -21,10 +21,13 @@ const featureHelp = {
   guide: 'The feature guide explains each part of BASE, what it does and which safeguards apply.'
 };
 
+const configUrl = String(supabaseConfig?.url || '').trim();
+const configKey = String(supabaseConfig?.anonKey || '').trim();
 const configured = Boolean(
-  supabaseConfig?.url && supabaseConfig?.anonKey &&
-  !String(supabaseConfig.url).includes('YOUR_') &&
-  !String(supabaseConfig.anonKey).includes('YOUR_')
+  /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(configUrl) &&
+  configKey.length > 20 &&
+  !/YOUR_|PASTE_/i.test(configKey) &&
+  !configKey.startsWith('sb_secret_')
 );
 
 function esc(value = '') {
@@ -171,8 +174,11 @@ async function initialise() {
   bindStaticControls();
   if (!configured) {
     setGuestState();
-    $('#authNotice').textContent = 'Add your Supabase URL and anon key in config.js to enable Google and email sign-in. You can still explore this empty preview.';
-    $('#supabaseConnection').textContent = 'Add config.js credentials';
+    const missing = !/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(configUrl)
+      ? 'Project URL'
+      : (!configKey || /YOUR_|PASTE_/i.test(configKey) ? 'Publishable key' : 'Valid Supabase credentials');
+    $('#authNotice').textContent = `Add your Supabase ${missing} in config.js to enable Google and email sign-in. The guest preview remains available without sample records.`;
+    $('#supabaseConnection').textContent = `Missing ${missing}`;
     return;
   }
   try {
@@ -334,7 +340,7 @@ function renderOverview() {
   $('#queueCount').textContent = countsAvailable ? state.reviews.filter(review => review.status !== 'Approved').length : '0';
   const recent = $('#recentReviews');
   if (!state.reviews.length) {
-    recent.innerHTML = `<div class="inline-empty"><span>▤</span><b>${state.workspace ? 'No reviews yet' : state.user ? 'Create your workspace first' : 'No preview records'}</b><p>${state.workspace ? 'Your team's real review submissions will appear here.' : state.user ? 'Create a workspace to begin saving reviews and sources.' : 'This preview is intentionally empty. Sign in to start a real workspace.'}</p>${state.workspace ? '<button class="text-button require-auth" id="emptyStartReview">Create your first review →</button>' : state.user ? '<button class="text-button" id="emptyCreateWorkspace">Create workspace →</button>' : '<button class="text-button" id="emptySignIn">Sign in to begin →</button>'}</div>`;
+    recent.innerHTML = `<div class="inline-empty"><span>▤</span><b>${state.workspace ? 'No reviews yet' : state.user ? 'Create your workspace first' : 'No preview records'}</b><p>${state.workspace ? "Your team's real review submissions will appear here." : state.user ? 'Create a workspace to begin saving reviews and sources.' : 'This preview is intentionally empty. Sign in to start a real workspace.'}</p>${state.workspace ? '<button class="text-button require-auth" id="emptyStartReview">Create your first review →</button>' : state.user ? '<button class="text-button" id="emptyCreateWorkspace">Create workspace →</button>' : '<button class="text-button" id="emptySignIn">Sign in to begin →</button>'}</div>`;
   } else {
     recent.innerHTML = state.reviews.slice(0, 5).map(review => `<button class="recent-item" data-review-id="${esc(review.id)}"><span class="recent-file">▤</span><span class="recent-main"><b>${esc(review.title)}</b><small>${esc(profileName(review.owner_uid))} · ${esc(review.channel || 'Unspecified channel')} · ${relativeDate(review.updated_at || review.created_at)}</small></span><span class="status-tag ${statusClass(review.status)}">${esc(review.status)}</span></button>`).join('');
     $$('[data-review-id]', recent).forEach(button => button.addEventListener('click', () => openReviewDetail(button.dataset.reviewId)));
@@ -721,9 +727,15 @@ $('#exportWorkspaceButton').addEventListener('click', () => {
 });
 
 // Theme and motion preferences.
+function safeGetPreference(key) {
+  try { return window.localStorage.getItem(key); } catch { return null; }
+}
+function safeSetPreference(key, value) {
+  try { window.localStorage.setItem(key, value); } catch { /* Storage may be blocked; preferences remain usable for this page. */ }
+}
 function loadPreferences() {
-  if (localStorage.getItem('base-theme') === 'dark') document.body.classList.add('dark');
-  state.reducedMotion = localStorage.getItem('base-reduced-motion') === 'true';
+  if (safeGetPreference('base-theme') === 'dark') document.body.classList.add('dark');
+  state.reducedMotion = safeGetPreference('base-reduced-motion') === 'true';
   document.body.classList.toggle('reduced-motion', state.reducedMotion);
   syncPreferenceButtons();
 }
@@ -734,14 +746,14 @@ function syncPreferenceButtons() {
 }
 function toggleTheme() {
   document.body.classList.toggle('dark');
-  localStorage.setItem('base-theme', document.body.classList.contains('dark') ? 'dark' : 'light');
+  safeSetPreference('base-theme', document.body.classList.contains('dark') ? 'dark' : 'light');
   syncPreferenceButtons();
 }
 $('#themeButton').addEventListener('click', toggleTheme);
 $('#darkSwitch').addEventListener('click', toggleTheme);
 $('#motionSwitch').addEventListener('click', () => {
   state.reducedMotion = !state.reducedMotion;
-  localStorage.setItem('base-reduced-motion', String(state.reducedMotion));
+  safeSetPreference('base-reduced-motion', String(state.reducedMotion));
   document.body.classList.toggle('reduced-motion', state.reducedMotion); syncPreferenceButtons();
 });
 
