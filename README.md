@@ -4,6 +4,8 @@
 
 BASE is a source-backed brand-governance workspace. This build removes seeded/demo records and replaces them with a real, account-scoped Supabase data model. The no-login preview is deliberately read-only and empty: it demonstrates the interface and feature explanations without inventing people, reviews, sources, analytics or activity.
 
+For the exact deployment sequence for this Supabase project, follow **[NEXT-STEPS.md](NEXT-STEPS.md)**.
+
 ## What is included
 
 - **Guest preview:** explore every page and the detailed feature guide without creating an account. No sample records are inserted or displayed.
@@ -34,7 +36,7 @@ The website runs in the empty guest preview until Supabase is configured. The gu
 ## 1. Create and configure Supabase
 
 1. Create a Supabase project.
-2. Open **SQL Editor** and run the full `supabase/schema.sql` script in this ZIP. It creates the tables, indexes, profile bootstrap trigger, RPC functions and row-level security policies. It does not seed demo data.
+2. Open **SQL Editor** and run the full `supabase/schema.sql` script in this ZIP. It creates the tables, indexes, profile bootstrap trigger, RPC functions and row-level security policies. It includes a compatibility repair for the earlier prototype (`workspace_members.user_id` text, `workspaces.owner_id` text, and missing `profiles`). It does not seed demo data. If you already ran the short repair SQL supplied during setup, this full script is designed to be safe to run afterward; do not run it while any workspace rows have a missing/invalid owner mapping.
 3. In **Project Settings → API**, copy the Project URL and the anon/publishable key.
 4. Put those two public values in `config.js`:
 
@@ -65,7 +67,7 @@ Install the Supabase CLI, log in and link your project from this folder. Then de
 ```bash
 supabase login
 supabase link --project-ref YOUR_PROJECT_REF
-supabase functions deploy agent-37
+supabase functions deploy agent-37 --project-ref egmekbtdurqrpikxfwee
 ```
 
 Set the function secrets (the default model is GPT-6.1 Sol; choose a model enabled for your API account):
@@ -77,6 +79,8 @@ supabase secrets set SITE_URL=https://your-deployed-domain.example
 ```
 
 `SUPABASE_URL`, `SUPABASE_ANON_KEY` and the Edge Function's service-role environment are supplied by the Supabase runtime in normal hosted deployment. For teammate invitations, ensure `SUPABASE_SERVICE_ROLE_KEY` is available as an Edge Function secret in your project. Never add it to `config.js`.
+
+After deployment, open **Supabase → Edge Functions → agent-37 → Logs** and keep the logs visible while testing. Sign in to the website, create a workspace, then send Agent 37 a simple message such as “Explain the review queue”. If it fails, copy the exact Edge Function log error; do not expose or paste any API keys.
 
 The function has three modes:
 

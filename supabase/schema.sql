@@ -24,6 +24,85 @@ create table if not exists public.workspace_members (
 alter table public.workspaces add column if not exists updated_at timestamptz not null default now();
 alter table public.workspace_members add column if not exists joined_at timestamptz not null default now();
 
+-- Compatibility repair for the earlier BASE prototype schema.
+-- The prototype used workspace_members.user_id as text and workspaces.owner_id as text.
+-- The application and all auth/RLS helpers use Supabase Auth UUIDs.
+alter table public.workspace_members
+  alter column user_id type uuid
+  using nullif(btrim(user_id::text), '')::uuid;
+
+-- The old workspace table used owner_id; the current app/schema uses created_by.
+alter table public.workspaces add column if not exists created_by uuid;
+
+-- Preserve legacy ownership where owner_id contains a real Supabase Auth UUID.
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'workspaces'
+      and column_name = 'owner_id' and data_type in ('text', 'character varying')
+  ) then
+    execute $q$
+      update public.workspaces w
+      set created_by = w.owner_id::uuid
+      where w.created_by is null
+        and w.owner_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        and exists (select 1 from auth.users u where u.id = w.owner_id::uuid)
+    $q$;
+  end if;
+end;
+$$;
+
+-- Do not silently invent owners for pre-existing workspaces.
+do $$
+begin
+  if exists (select 1 from public.workspaces where created_by is null) then
+    raise exception 'Some workspaces have no valid created_by Auth UUID. Map their owners before applying this schema.';
+  end if;
+end;
+$$;
+
+alter table public.workspaces alter column created_by set not null;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint c
+    join pg_attribute a
+      on a.attrelid = c.conrelid and a.attnum = any(c.conkey)
+    where c.conrelid = 'public.workspaces'::regclass
+      and c.confrelid = 'auth.users'::regclass
+      and c.contype = 'f'
+      and a.attname = 'created_by'
+  ) then
+    alter table public.workspaces
+      add constraint workspaces_created_by_auth_fkey
+      foreign key (created_by) references auth.users(id) on delete restrict;
+  end if;
+
+  if not exists (
+    select 1
+    from pg_constraint c
+    join pg_attribute a
+      on a.attrelid = c.conrelid and a.attnum = any(c.conkey)
+    where c.conrelid = 'public.workspace_members'::regclass
+      and c.confrelid = 'auth.users'::regclass
+      and c.contype = 'f'
+      and a.attname = 'user_id'
+  ) then
+    alter table public.workspace_members
+      add constraint workspace_members_user_auth_fkey
+      foreign key (user_id) references auth.users(id) on delete cascade;
+  end if;
+end;
+$$;
+
+-- Supports ON CONFLICT (workspace_id, user_id) even on the old table,
+-- which had a separate surrogate id primary key.
+create unique index if not exists workspace_members_workspace_user_unique
+  on public.workspace_members (workspace_id, user_id);
+
 create table if not exists public.profiles (
   user_id uuid primary key references auth.users(id) on delete cascade,
   username text not null check (char_length(username) between 2 and 32),
