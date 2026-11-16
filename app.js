@@ -7,7 +7,7 @@ const state = {
   db: null, user: null, session: null, profile: null, workspace: null, role: null,
   workspaces: [], activeWorkspaceId: '', reviews: [], sources: [], members: [], events: [], comments: [],
   memberProfiles: {}, currentReview: null, authMode: 'signin', pendingAgent: null,
-  loading: false, edgeAvailable: false, reducedMotion: false
+  loading: false, edgeAvailable: false, reducedMotion: false, agentBusy: false, sessionVersion: 0
 };
 
 const featureHelp = {
@@ -23,11 +23,21 @@ const featureHelp = {
 
 const configUrl = String(supabaseConfig?.url || '').trim();
 const configKey = String(supabaseConfig?.anonKey || '').trim();
+function isPublicSupabaseKey(key) {
+  if (/^sb_publishable_[A-Za-z0-9_-]+$/.test(key)) return true;
+  const parts = key.split('.');
+  if (parts.length !== 3 || !parts[1]) return false;
+  try {
+    const encoded = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = encoded + '='.repeat((4 - encoded.length % 4) % 4);
+    const payload = JSON.parse(atob(padded));
+    return payload.role === 'anon';
+  } catch { return false; }
+}
 const configured = Boolean(
   /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(configUrl) &&
-  configKey.length > 20 &&
   !/YOUR_|PASTE_/i.test(configKey) &&
-  !configKey.startsWith('sb_secret_')
+  isPublicSupabaseKey(configKey)
 );
 
 function esc(value = '') {
@@ -103,6 +113,50 @@ function getDisplayName() {
 function currentRoleCanManageSources() { return ['admin', 'brand_owner'].includes(state.role); }
 function currentRoleCanReview() { return ['admin', 'brand_owner', 'reviewer'].includes(state.role); }
 
+function clearWorkspaceState() {
+  state.profile = null;
+  state.workspace = null;
+  state.role = null;
+  state.workspaces = [];
+  state.activeWorkspaceId = '';
+  state.reviews = [];
+  state.sources = [];
+  state.members = [];
+  state.events = [];
+  state.comments = [];
+  state.memberProfiles = {};
+  state.currentReview = null;
+  state.pendingAgent = null;
+  state.edgeAvailable = false;
+  state.agentBusy = false;
+  $('#agentSend') && ($('#agentSend').disabled = false);
+  resetAgentMessages();
+}
+
+function isCurrentSession(version, userId) {
+  return version === state.sessionVersion && state.user?.id === userId;
+}
+
+async function invokeAgent(body) {
+  if (!state.db) throw new Error('Supabase is not initialised. Refresh the page and sign in again.');
+  const { data, error } = await state.db.functions.invoke('agent-37', { body });
+  if (error) {
+    let detail = error.message || 'Agent 37 request failed.';
+    const context = error.context;
+    if (context && typeof context.clone === 'function') {
+      try {
+        const payload = await context.clone().json();
+        if (payload?.error) detail = payload.error;
+      } catch { /* The function gateway may return a non-JSON response. */ }
+    } else if (context?.message) {
+      detail = context.message;
+    }
+    throw new Error(detail);
+  }
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
+
 function go(view) {
   const target = document.getElementById(view);
   if (!target) return;
@@ -136,14 +190,19 @@ $('#workspaceOptions').addEventListener('click', async event => {
   const button = event.target.closest('[data-workspace-id]');
   if (!button || button.dataset.workspaceId === state.workspace?.id) return closeModal('workspaceSwitchModal');
   const nextId = button.dataset.workspaceId;
+  const previousId = state.workspace?.id || state.activeWorkspaceId;
   button.disabled = true; button.classList.add('is-loading');
   try {
+    closeModal('detailModal'); closeModal('reviewModal'); closeModal('sourceModal'); closeModal('inviteModal');
+    state.currentReview = null;
     state.activeWorkspaceId = nextId;
-    try { window.localStorage.setItem(`base-active-workspace:${state.user.id}`, nextId); } catch {}
     await loadWorkspace();
+    if (!state.workspace) throw new Error('The selected workspace could not be loaded.');
     renderAll(); closeModal('workspaceSwitchModal');
     toast(`Switched to ${state.workspace.name}.`, 'success');
   } catch (error) {
+    state.activeWorkspaceId = previousId || '';
+    try { await loadWorkspace(); renderAll(); } catch (restoreError) { console.error('Could not restore previous workspace:', restoreError); }
     toast(`Could not switch workspace: ${error.message}`, 'error');
     button.disabled = false; button.classList.remove('is-loading');
   }
@@ -151,9 +210,8 @@ $('#workspaceOptions').addEventListener('click', async event => {
 
 // A workspace is always real and empty on first use. Guest mode is a read-only product tour.
 function setGuestState() {
-  state.user = null; state.session = null; state.profile = null; state.workspace = null; state.role = null;
-  state.workspaces = []; state.activeWorkspaceId = '';
-  state.reviews = []; state.sources = []; state.members = []; state.events = []; state.memberProfiles = {};
+  clearWorkspaceState();
+  state.user = null; state.session = null;
   $('#previewBanner').hidden = false;
   $('#connectionState').innerHTML = '<i></i> Preview mode';
   $('#connectionState').classList.remove('connected');
@@ -176,7 +234,7 @@ async function initialise() {
     setGuestState();
     const missing = !/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(configUrl)
       ? 'Project URL'
-      : (!configKey || /YOUR_|PASTE_/i.test(configKey) ? 'Publishable key' : 'Valid Supabase credentials');
+      : (!configKey || /YOUR_|PASTE_/i.test(configKey) || !isPublicSupabaseKey(configKey) ? 'Publishable/anon key (never a secret or service-role key)' : 'Valid Supabase credentials');
     $('#authNotice').textContent = `Add your Supabase ${missing} in config.js to enable Google and email sign-in. The guest preview remains available without sample records.`;
     $('#supabaseConnection').textContent = `Missing ${missing}`;
     return;
@@ -202,8 +260,16 @@ async function initialise() {
 }
 
 async function handleSession(session) {
+  const version = ++state.sessionVersion;
+  const nextUser = session?.user || null;
+  const previousUserId = state.user?.id || null;
+  const nextUserId = nextUser?.id || null;
+  if (previousUserId !== nextUserId) {
+    clearWorkspaceState();
+    for (const modalId of ['authModal', 'workspaceModal', 'workspaceSwitchModal', 'reviewModal', 'sourceModal', 'detailModal', 'inviteModal']) closeModal(modalId);
+  }
   state.session = session || null;
-  state.user = session?.user || null;
+  state.user = nextUser;
   if (!state.user) {
     setGuestState();
     return;
@@ -217,37 +283,53 @@ async function handleSession(session) {
   $('#userAvatar').textContent = initials(getDisplayName());
   $('#welcomeTitle').textContent = `Welcome back, ${getDisplayName().split(' ')[0]}.`;
   try {
-    await ensureProfile();
-    await state.db.rpc('accept_pending_workspace_invitations');
-    await loadWorkspace();
+    await ensureProfile(version, nextUserId);
+    if (!isCurrentSession(version, nextUserId)) return;
+    const { error: invitationError } = await state.db.rpc('accept_pending_workspace_invitations');
+    if (!isCurrentSession(version, nextUserId)) return;
+    if (invitationError) throw invitationError;
+    await loadWorkspace(version, nextUserId);
   } catch (error) {
+    if (!isCurrentSession(version, nextUserId)) return;
     console.error('Could not load workspace:', error);
     toast(`Could not load workspace: ${error.message || 'Check database setup and access policies.'}`, 'error');
   }
+  if (!isCurrentSession(version, nextUserId)) return;
   renderAll();
 }
 
-async function ensureProfile() {
-  const { data, error } = await state.db.from('profiles').select('*').eq('user_id', state.user.id).maybeSingle();
+async function ensureProfile(version = state.sessionVersion, userId = state.user?.id) {
+  if (!userId || !isCurrentSession(version, userId)) return;
+  const { data, error } = await state.db.from('profiles').select('*').eq('user_id', userId).maybeSingle();
+  if (!isCurrentSession(version, userId)) return;
   if (error) throw error;
   if (data) {
     state.profile = data;
     return;
   }
-  const username = state.user.user_metadata?.username || state.user.user_metadata?.full_name || state.user.email?.split('@')[0] || 'New member';
+  const rawName = state.user.user_metadata?.username || state.user.user_metadata?.full_name || state.user.email?.split('@')[0] || 'New member';
+  const username = String(rawName).trim().slice(0, 32) || 'New member';
+  const safeUsername = username.length >= 2 ? username : 'New member';
   const { data: inserted, error: insertError } = await state.db.from('profiles')
-    .upsert({ user_id: state.user.id, username }, { onConflict: 'user_id' }).select().single();
+    .upsert({ user_id: userId, username: safeUsername }, { onConflict: 'user_id' }).select().single();
+  if (!isCurrentSession(version, userId)) return;
   if (insertError) throw insertError;
   state.profile = inserted;
 }
 
-async function loadWorkspace() {
+async function loadWorkspace(version = state.sessionVersion, userId = state.user?.id) {
+  if (!userId || !isCurrentSession(version, userId)) return;
+  const requestedWorkspaceId = state.activeWorkspaceId || state.workspace?.id || '';
+  state.workspace = null; state.role = null; state.workspaces = []; state.activeWorkspaceId = '';
+  state.reviews = []; state.sources = []; state.members = []; state.events = []; state.comments = []; state.memberProfiles = {};
+  $('#workspaceName').textContent = 'Loading workspace…';
+  $('#workspaceMeta').textContent = 'Syncing your workspace data';
   const { data: memberships, error } = await state.db.from('workspace_members')
-    .select('workspace_id,role,joined_at').eq('user_id', state.user.id).order('joined_at', { ascending: true });
+    .select('workspace_id,role,joined_at').eq('user_id', userId).order('joined_at', { ascending: true });
+  if (!isCurrentSession(version, userId)) return;
   if (error) throw error;
   if (!memberships?.length) {
     state.workspace = null; state.role = null; state.workspaces = []; state.activeWorkspaceId = '';
-    state.reviews = []; state.sources = []; state.members = []; state.events = []; state.memberProfiles = {};
     $('#workspaceName').textContent = 'No workspace yet';
     $('#workspaceMeta').textContent = 'Create one to get started';
     openWorkspacePromptIfNeeded();
@@ -256,21 +338,27 @@ async function loadWorkspace() {
   const workspaceIds = memberships.map(item => item.workspace_id);
   const { data: workspaceRows, error: workspaceError } = await state.db.from('workspaces')
     .select('*').in('id', workspaceIds);
+  if (!isCurrentSession(version, userId)) return;
   if (workspaceError) throw workspaceError;
   const rowsById = new Map((workspaceRows || []).map(row => [row.id, row]));
   state.workspaces = memberships.map(member => ({
     ...rowsById.get(member.workspace_id), role: member.role, joined_at: member.joined_at,
   })).filter(item => item.id);
-  let preferredId = state.activeWorkspaceId || state.workspace?.id || '';
-  try { preferredId = preferredId || window.localStorage.getItem(`base-active-workspace:${state.user.id}`) || ''; } catch {}
+  if (state.workspaces.length !== memberships.length) {
+    state.workspaces = [];
+    throw new Error('Some workspace memberships have no readable workspace row. Check the Supabase workspaces RLS policy and schema migration.');
+  }
+  let preferredId = requestedWorkspaceId;
+  try { preferredId = preferredId || window.localStorage.getItem(`base-active-workspace:${userId}`) || ''; } catch {}
   const membership = state.workspaces.find(item => item.id === preferredId) || state.workspaces[0];
   state.activeWorkspaceId = membership.id;
-  try { window.localStorage.setItem(`base-active-workspace:${state.user.id}`, membership.id); } catch {}
   state.role = membership.role;
   state.workspace = membership;
   $('#workspaceName').textContent = membership.name;
   $('#workspaceMeta').textContent = `${membership.role.replace('_', ' ')} · ${state.workspaces.length} workspace${state.workspaces.length === 1 ? '' : 's'}`;
-  await loadWorkspaceData();
+  const loaded = await loadWorkspaceData(version, userId, membership.id);
+  if (!loaded || !isCurrentSession(version, userId)) return;
+  try { window.localStorage.setItem(`base-active-workspace:${userId}`, membership.id); } catch {}
 }
 
 function renderWorkspaceSwitcher() {
@@ -300,15 +388,18 @@ function openWorkspacePromptIfNeeded() {
   $('#workspaceModal').classList.remove('open');
 }
 
-async function loadWorkspaceData() {
-  if (!state.workspace || !state.db) return;
-  const wid = state.workspace.id;
+async function loadWorkspaceData(version = state.sessionVersion, userId = state.user?.id, workspaceId = state.workspace?.id) {
+  if (!workspaceId || !state.db || !userId || !isCurrentSession(version, userId)) return false;
+  // Never leave records from a previous workspace visible while a new query is pending or fails.
+  state.reviews = []; state.sources = []; state.members = []; state.events = []; state.comments = []; state.memberProfiles = {};
+  const wid = workspaceId;
   const [reviewsResult, sourcesResult, membersResult, eventsResult] = await Promise.all([
     state.db.from('reviews').select('*').eq('workspace_id', wid).order('updated_at', { ascending: false }),
     state.db.from('brand_sources').select('*').eq('workspace_id', wid).order('created_at', { ascending: false }),
     state.db.from('workspace_members').select('user_id,role,joined_at').eq('workspace_id', wid).order('joined_at', { ascending: true }),
     state.db.from('review_events').select('*').eq('workspace_id', wid).order('created_at', { ascending: false }).limit(100)
   ]);
+  if (!isCurrentSession(version, userId) || state.workspace?.id !== wid) return false;
   for (const result of [reviewsResult, sourcesResult, membersResult, eventsResult]) if (result.error) throw result.error;
   state.reviews = reviewsResult.data || [];
   state.sources = sourcesResult.data || [];
@@ -319,12 +410,13 @@ async function loadWorkspaceData() {
     ...state.reviews.map(review => review.owner_uid).filter(Boolean),
     ...state.events.map(event => event.actor_uid).filter(Boolean)
   ])];
-  state.memberProfiles = {};
   if (profileIds.length) {
     const { data: profiles, error } = await state.db.from('profiles').select('user_id,username,avatar_url').in('user_id', profileIds);
+    if (!isCurrentSession(version, userId) || state.workspace?.id !== wid) return false;
     if (error) throw error;
     (profiles || []).forEach(profile => { state.memberProfiles[profile.user_id] = profile; });
   }
+  return true;
 }
 
 function renderAll() {
@@ -561,15 +653,11 @@ $('#reviewForm').addEventListener('submit', async event => {
   let analysisNote = 'AI analysis is not configured. The draft was saved without invented findings.';
   if (state.db.functions) {
     try {
-      const { data, error } = await state.db.functions.invoke('agent-37', {
-        body: { mode: 'analyze', workspace_id: state.workspace.id, draft: { title, content, channel } }
-      });
-      if (!error && data?.findings) {
+      const data = await invokeAgent({ mode: 'analyze', workspace_id: state.workspace.id, draft: { title, content, channel } });
+      if (data && Array.isArray(data.findings)) {
         findings = data.findings;
         analysisNote = data.note || 'Analysis completed against current workspace sources.';
         state.edgeAvailable = true;
-      } else if (error) {
-        analysisNote = `AI analysis unavailable: ${error.message || 'Function not deployed or not configured.'}`;
       }
     } catch (error) { analysisNote = `AI analysis unavailable: ${error.message}`; }
   }
@@ -678,12 +766,7 @@ $('#inviteForm').addEventListener('submit', async event => {
   const email = $('#inviteEmail').value.trim(); const role = $('#inviteRole').value;
   const button = $('button[type="submit"]', event.currentTarget); button.disabled = true;
   try {
-    const { data, error } = await state.db.functions.invoke('agent-37', {
-      body: { mode: 'execute', workspace_id: state.workspace.id, confirmed: true, action: { name: 'invite_member', args: { email, role } } }
-    });
-    if (error) throw error;
-    if (data?.error) throw new Error(data.error);
-    await logEvent('member_invited', { email, role });
+    const data = await invokeAgent({ mode: 'execute', workspace_id: state.workspace.id, confirmed: true, action: { name: 'invite_member', args: { email, role } } });
     closeModal('inviteModal'); event.currentTarget.reset();
     toast(data?.message || `Invitation sent to ${email}.`, 'success');
   } catch (error) { toast(`Invitation unavailable: ${error.message}. Check Edge Function secrets and email delivery.`, 'error'); }
@@ -694,7 +777,7 @@ $('#inviteForm').addEventListener('submit', async event => {
 $('#profileForm').addEventListener('submit', async event => {
   event.preventDefault(); if (!state.user || !state.db) return showGuestOrSignIn();
   const username = $('#profileUsername').value.trim();
-  if (username.length < 2 || username.length > 32) return toast('Display name must be 2–32 characters.', 'warning');
+  if (username.length < 2 || username.length > 32 || !/^[\p{L}\p{N} ._'’\-]+$/u.test(username)) return toast('Display name must be 2–32 letters, numbers or basic punctuation.', 'warning');
   try {
     const { error: authError } = await state.db.auth.updateUser({ data: { username } });
     if (authError) throw authError;
@@ -777,6 +860,25 @@ $('#guideFastNavAgent').addEventListener('click', openAgent);
 $('#guideSafeAgent').addEventListener('click', openAgent);
 $('#closeAgent').addEventListener('click', closeAgent);
 $('#agentBackdrop').addEventListener('click', closeAgent);
+function resetAgentMessages() {
+  const container = $('#agentMessages');
+  if (!container) return;
+  const welcome = document.createElement('div'); welcome.className = 'agent-welcome';
+  const mark = document.createElement('span'); mark.textContent = '✳';
+  const heading = document.createElement('h3'); heading.textContent = 'What can I take care of?';
+  const description = document.createElement('p'); description.textContent = 'Ask about BASE, navigate the workspace, or request an action. Any change to your data is presented for confirmation first.';
+  const suggestions = document.createElement('div'); suggestions.className = 'agent-suggestions';
+  for (const [prompt, label] of [
+    ['Hi', 'Say hello'], ['What can you help me with?', 'What can you do?'],
+    ['Explain how the review queue works', 'Explain the review queue'], ['Go to the source library', 'Open source library']
+  ]) {
+    const button = document.createElement('button'); button.type = 'button';
+    button.dataset.prompt = prompt; button.textContent = label; suggestions.append(button);
+  }
+  welcome.append(mark, heading, description, suggestions);
+  container.replaceChildren(welcome);
+  container.scrollTop = 0;
+}
 function addAgentMessage(text, who = 'assistant') {
   const container = $('#agentMessages');
   $('.agent-welcome', container)?.remove();
@@ -786,14 +888,14 @@ function addAgentMessage(text, who = 'assistant') {
   return node;
 }
 function addAgentProposal(proposal) {
-  state.pendingAgent = proposal;
   const card = document.createElement('div'); card.className = 'agent-proposal';
+  card.dataset.proposalName = String(proposal?.name || '');
   const title = document.createElement('b'); title.textContent = proposal.summary || proposal.name.replaceAll('_', ' ');
   const description = document.createElement('p'); description.textContent = describeAgentAction(proposal);
   const warning = document.createElement('small'); warning.textContent = 'Nothing has changed yet. Review this proposal and confirm before it is applied.';
   const actions = document.createElement('div'); actions.className = 'proposal-actions';
-  const cancel = document.createElement('button'); cancel.className = 'button button-secondary'; cancel.textContent = 'Cancel'; cancel.addEventListener('click', () => { state.pendingAgent = null; card.remove(); addAgentMessage('Cancelled. No change was made.'); });
-  const confirm = document.createElement('button'); confirm.className = 'button button-primary'; confirm.textContent = 'Confirm & apply'; confirm.addEventListener('click', () => executeAgentProposal(card, confirm));
+  const cancel = document.createElement('button'); cancel.className = 'button button-secondary'; cancel.textContent = 'Cancel'; cancel.addEventListener('click', () => { card.remove(); addAgentMessage('Cancelled. No change was made.'); });
+  const confirm = document.createElement('button'); confirm.className = 'button button-primary'; confirm.textContent = 'Confirm & apply'; confirm.addEventListener('click', () => executeAgentProposal(card, confirm, proposal));
   actions.append(cancel, confirm); card.append(title, description, warning, actions);
   $('#agentMessages').appendChild(card); $('#agentMessages').scrollTop = $('#agentMessages').scrollHeight;
 }
@@ -811,23 +913,27 @@ function describeAgentAction(proposal) {
     default: return 'Apply the proposed change to your active workspace.';
   }
 }
-async function executeAgentProposal(card, button) {
-  if (!state.pendingAgent || !state.db) return;
+async function executeAgentProposal(card, button, proposal) {
+  if (!proposal || !state.db || !state.user || card.dataset.executing === 'true') return;
+  const requestVersion = state.sessionVersion;
+  const requestUserId = state.user.id;
+  card.dataset.executing = 'true';
   button.disabled = true; button.textContent = 'Applying…';
-  const proposal = state.pendingAgent;
   try {
-    const { data, error } = await state.db.functions.invoke('agent-37', {
-      body: { mode: 'execute', confirmed: true, workspace_id: state.workspace?.id || null, action: proposal }
-    });
-    if (error) throw error;
-    if (data?.error) throw new Error(data.error);
-    state.pendingAgent = null; card.remove();
+    const data = await invokeAgent({ mode: 'execute', confirmed: true, workspace_id: state.workspace?.id || null, action: proposal });
+    if (!isCurrentSession(requestVersion, requestUserId)) return;
+    card.remove();
     addAgentMessage(data?.message || 'The requested action was completed.');
     if (data?.navigate) go(data.navigate);
-    await ensureProfile();
+    await ensureProfile(requestVersion, requestUserId);
+    if (!isCurrentSession(requestVersion, requestUserId)) return;
     $('#userName').textContent = getDisplayName(); $('#userAvatar').textContent = initials(getDisplayName());
-    await loadWorkspaceData(); renderAll();
+    await loadWorkspace(requestVersion, requestUserId);
+    if (!isCurrentSession(requestVersion, requestUserId)) return;
+    renderAll();
   } catch (error) {
+    if (!isCurrentSession(requestVersion, requestUserId)) return;
+    card.dataset.executing = 'false';
     button.disabled = false; button.textContent = 'Retry confirmation';
     addAgentMessage(`I could not apply that action: ${error.message}. No success has been assumed; check your permissions and try again.`);
   }
@@ -859,25 +965,27 @@ function guestAgentReply(message) {
   return 'I can help you explore BASE in this preview. I don’t have access to private account or workspace records until you sign in, but I can explain how the product works. Try asking about reviews, approved sources, insights, team roles, audit history or Agent 37—or tell me which page you want to open.';
 }
 async function sendAgentMessage() {
+  if (state.agentBusy) return;
   const input = $('#agentInput'); const message = input.value.trim();
   if (!message) return;
   input.value = ''; input.style.height = 'auto';
   addAgentMessage(message, 'user');
   if (!state.user) { addAgentMessage(guestAgentReply(message)); return; }
+  const requestVersion = state.sessionVersion;
+  const requestUserId = state.user.id;
   const waiting = addAgentMessage('Thinking through your request…'); waiting.classList.add('thinking');
+  state.agentBusy = true;
   $('#agentSend').disabled = true;
   try {
-    const { data, error } = await state.db.functions.invoke('agent-37', {
-      body: { mode: 'chat', workspace_id: state.workspace?.id || null, message }
-    });
+    const data = await invokeAgent({ mode: 'chat', workspace_id: state.workspace?.id || null, message });
+    if (!isCurrentSession(requestVersion, requestUserId)) return;
     waiting.remove();
-    if (error) throw error;
-    if (data?.error) throw new Error(data.error);
     state.edgeAvailable = true; fillSettings();
     addAgentMessage(data?.reply || 'I could not form a response. Please try again.');
     if (data?.proposal) addAgentProposal(data.proposal);
     if (data?.navigate) go(data.navigate);
   } catch (error) {
+    if (!isCurrentSession(requestVersion, requestUserId)) return;
     waiting.remove();
     const detail = error?.message || error?.context?.message || 'Unknown connection error';
     const hint = /401|unauthori[sz]ed|jwt|token/i.test(detail) ? 'Your sign-in session may have expired. Sign out and sign in again.' : /404|not found|function/i.test(detail) ? 'Deploy the agent-37 Edge Function in Supabase.' : /OPENAI_API_KEY|api key|model|provider|429|quota|billing/i.test(detail) ? 'Check the OPENAI_API_KEY, OPENAI_MODEL and OpenAI project billing in Supabase Edge Function secrets.' : 'Check the Supabase function logs and your network connection.';
@@ -886,14 +994,20 @@ async function sendAgentMessage() {
 Details: ${detail}
 
 Next step: ${hint} Your data has not been changed.`);
-  } finally { $('#agentSend').disabled = false; }
+  } finally {
+    if (isCurrentSession(requestVersion, requestUserId)) { state.agentBusy = false; $('#agentSend').disabled = false; }
+  }
 }
 $('#agentSend').addEventListener('click', sendAgentMessage);
 $('#agentInput').addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendAgentMessage(); }
 });
 $('#agentInput').addEventListener('input', event => { event.target.style.height = 'auto'; event.target.style.height = `${Math.min(event.target.scrollHeight, 140)}px`; });
-$$('[data-prompt]').forEach(button => button.addEventListener('click', () => { $('#agentInput').value = button.dataset.prompt; sendAgentMessage(); }));
+$('#agentMessages').addEventListener('click', event => {
+  const button = event.target.closest('[data-prompt]');
+  if (!button) return;
+  $('#agentInput').value = button.dataset.prompt; sendAgentMessage();
+});
 
 // Search, modal dismissal, keyboard shortcuts, and page controls.
 $('#reviewSearch').addEventListener('input', renderReviews);

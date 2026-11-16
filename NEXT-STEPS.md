@@ -10,7 +10,7 @@ This folder is the updated CodeNova project.
 4. Wait for `Success`. The schema does not insert demo records.
 5. If SQL Editor reports an error, stop and send the exact error text. Do not disable RLS or delete tables.
 
-The schema now includes compatibility handling for the older workspace schema. It expects `workspace_members.user_id` to be a Supabase Auth UUID and `workspaces.created_by` to reference `auth.users(id)`.
+The schema includes compatibility handling for the older workspace schema. It requires every `workspace_members.user_id` and `workspaces.created_by` to match a real Supabase Auth UUID. Firebase Auth UIDs cannot be used directly; the migration stops without deleting rows when legacy IDs cannot be mapped. It also stops if old membership roles are outside `creator`, `brand_owner`, `reviewer` and `admin`.
 
 ## B. Confirm Supabase Auth
 
@@ -46,7 +46,7 @@ supabase secrets set OPENAI_MODEL=gpt-6.1-sol --project-ref egmekbtdurqrpikxfwee
 supabase secrets set SITE_URL=https://codenova-eight-sandy.vercel.app --project-ref egmekbtdurqrpikxfwee
 ```
 
-Replace `YOUR_REAL_OPENAI_API_KEY` with the key from your OpenAI API account. Do not put it in `config.js`, Vercel frontend variables, GitHub, or chat. The Edge Function uses Supabase's server-side environment for Supabase credentials. Invitation sending additionally requires the service-role credential to be available to the function; never expose that credential in the browser.
+Replace `YOUR_REAL_OPENAI_API_KEY` with the key from your OpenAI API account. Do not put it in `config.js`, Vercel frontend variables, GitHub, or chat. The Edge Function reads Supabase's server-side publishable/secret-key runtime variables (and supports the legacy anon/service-role variables). Invitation sending needs the server-side secret key; never expose it in the browser.
 
 ## D. Deploy the website
 

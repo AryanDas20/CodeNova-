@@ -27,9 +27,40 @@ alter table public.workspace_members add column if not exists joined_at timestam
 -- Compatibility repair for the earlier BASE prototype schema.
 -- The prototype used workspace_members.user_id as text and workspaces.owner_id as text.
 -- The application and all auth/RLS helpers use Supabase Auth UUIDs.
+-- Give legacy Firebase/non-UUID identity rows a clear stop instead of a raw cast error.
+do $$
+begin
+  if exists (
+    select 1 from public.workspace_members
+    where nullif(btrim(user_id::text), '') is null
+       or btrim(user_id::text) !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  ) then
+    raise exception 'Cannot migrate workspace_members.user_id: one or more rows are not Supabase Auth UUIDs. Re-link those legacy members to matching auth.users UUIDs before rerunning this script; no memberships were deleted.';
+  end if;
+end;
+$$;
+
 alter table public.workspace_members
   alter column user_id type uuid
   using nullif(btrim(user_id::text), '')::uuid;
+
+-- Stop with a clear message if old IDs are UUID-shaped but are not Supabase Auth users.
+do $$
+begin
+  if exists (
+    select 1 from public.workspace_members m
+    where not exists (select 1 from auth.users u where u.id = m.user_id)
+  ) then
+    raise exception 'Cannot migrate workspace_members.user_id: one or more UUIDs do not exist in auth.users. Sign those people into this Supabase project or map their memberships to valid Auth UUIDs before rerunning.';
+  end if;
+  if exists (
+    select 1 from public.workspace_members
+    where role is null or role not in ('creator', 'brand_owner', 'reviewer', 'admin')
+  ) then
+    raise exception 'Cannot migrate workspace_members.role: one or more roles are unsupported. Map roles to creator, brand_owner, reviewer or admin before rerunning.';
+  end if;
+end;
+$$;
 
 -- The old workspace table used owner_id; the current app/schema uses created_by.
 alter table public.workspaces add column if not exists created_by uuid;
@@ -49,6 +80,17 @@ begin
         and w.owner_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
         and exists (select 1 from auth.users u where u.id = w.owner_id::uuid)
     $q$;
+  elsif exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'workspaces'
+      and column_name = 'owner_id' and data_type = 'uuid'
+  ) then
+    execute $q$
+      update public.workspaces w
+      set created_by = w.owner_id
+      where w.created_by is null
+        and exists (select 1 from auth.users u where u.id = w.owner_id)
+    $q$;
   end if;
 end;
 $$;
@@ -56,8 +98,12 @@ $$;
 -- Do not silently invent owners for pre-existing workspaces.
 do $$
 begin
-  if exists (select 1 from public.workspaces where created_by is null) then
-    raise exception 'Some workspaces have no valid created_by Auth UUID. Map their owners before applying this schema.';
+  if exists (
+    select 1 from public.workspaces w
+    where w.created_by is null
+       or not exists (select 1 from auth.users u where u.id = w.created_by)
+  ) then
+    raise exception 'Some workspaces have no valid created_by Auth UUID in auth.users. Map their owners before applying this schema; existing workspace data has not been deleted.';
   end if;
 end;
 $$;
@@ -363,34 +409,23 @@ alter table public.review_events enable row level security;
 alter table public.review_comments enable row level security;
 alter table public.workspace_invitations enable row level security;
 
--- Remove policies from the original prototype before creating the controlled set.
-drop policy if exists "members can read own workspace" on public.workspaces;
-drop policy if exists "members can read membership" on public.workspace_members;
-drop policy if exists "members can read sources" on public.brand_sources;
-drop policy if exists "owners manage sources" on public.brand_sources;
-drop policy if exists "members read reviews" on public.reviews;
-drop policy if exists "members create reviews" on public.reviews;
-drop policy if exists "review owner or reviewer update" on public.reviews;
-drop policy if exists workspaces_select_member on public.workspaces;
-drop policy if exists workspaces_update_admin on public.workspaces;
-drop policy if exists members_select_workspace on public.workspace_members;
-drop policy if exists profiles_select_colleague on public.profiles;
-drop policy if exists profiles_insert_self on public.profiles;
-drop policy if exists profiles_update_self on public.profiles;
-drop policy if exists sources_select_member on public.brand_sources;
-drop policy if exists sources_insert_manager on public.brand_sources;
-drop policy if exists sources_update_manager on public.brand_sources;
-drop policy if exists sources_delete_manager on public.brand_sources;
-drop policy if exists reviews_select_member on public.reviews;
-drop policy if exists reviews_insert_member on public.reviews;
-drop policy if exists reviews_update_owner on public.reviews;
-drop policy if exists reviews_delete_owner_or_admin on public.reviews;
-drop policy if exists events_select_member on public.review_events;
-drop policy if exists events_insert_member on public.review_events;
-drop policy if exists comments_select_member on public.review_comments;
-drop policy if exists comments_insert_member on public.review_comments;
-drop policy if exists invitations_select_admin on public.workspace_invitations;
-drop policy if exists "members read review events" on public.review_events;
+-- Remove every pre-existing policy on these tables, including policies from older iterations
+-- with names not known to this migration. Leaving an old permissive policy would bypass the
+-- intended RLS boundary because PostgreSQL combines permissive policies with OR.
+do $$
+declare
+  policy_row record;
+begin
+  for policy_row in
+    select schemaname, tablename, policyname
+    from pg_policies
+    where schemaname = 'public'
+      and tablename in ('workspaces', 'workspace_members', 'profiles', 'brand_sources', 'reviews', 'review_events', 'review_comments', 'workspace_invitations')
+  loop
+    execute format('drop policy if exists %I on %I.%I', policy_row.policyname, policy_row.schemaname, policy_row.tablename);
+  end loop;
+end;
+$$;
 
 create policy workspaces_select_member on public.workspaces
 for select to authenticated using (public.is_workspace_member(id));
@@ -426,22 +461,59 @@ create policy reviews_delete_owner_or_admin on public.reviews
 for delete to authenticated using (public.is_workspace_member(workspace_id) and (owner_uid = auth.uid() or public.is_workspace_admin(workspace_id)));
 
 create policy events_select_member on public.review_events
-for select to authenticated using (public.is_workspace_member(workspace_id));
+for select to authenticated using (
+  public.is_workspace_member(workspace_id)
+  and (review_id is null or exists (
+    select 1 from public.reviews r where r.id = review_id and r.workspace_id = review_events.workspace_id
+  ))
+);
 create policy events_insert_member on public.review_events
-for insert to authenticated with check (actor_uid = auth.uid() and public.is_workspace_member(workspace_id));
+for insert to authenticated with check (
+  actor_uid = auth.uid() and public.is_workspace_member(workspace_id)
+  and (review_id is null or exists (
+    select 1 from public.reviews r where r.id = review_id and r.workspace_id = review_events.workspace_id
+  ))
+);
 
 create policy comments_select_member on public.review_comments
-for select to authenticated using (public.is_workspace_member(workspace_id));
+for select to authenticated using (
+  public.is_workspace_member(workspace_id)
+  and exists (select 1 from public.reviews r where r.id = review_id and r.workspace_id = review_comments.workspace_id)
+);
 create policy comments_insert_member on public.review_comments
-for insert to authenticated with check (user_id = auth.uid() and public.is_workspace_member(workspace_id));
+for insert to authenticated with check (
+  user_id = auth.uid() and public.is_workspace_member(workspace_id)
+  and exists (select 1 from public.reviews r where r.id = review_id and r.workspace_id = review_comments.workspace_id)
+);
 
 create policy invitations_select_admin on public.workspace_invitations
 for select to authenticated using (public.is_workspace_admin(workspace_id));
+
+-- Restrict mutable columns so a workspace admin cannot rewrite its owner/ID and
+-- a source manager cannot move a source between tenants or impersonate its owner.
+revoke update on public.workspaces from authenticated;
+grant update (name) on public.workspaces to authenticated;
+revoke update on public.brand_sources from authenticated;
+grant update (name, source_type, body, version, review_due) on public.brand_sources to authenticated;
 
 -- Prevent browser clients from editing review status directly; the set_review_status RPC
 -- enforces reviewer rights and separation of duties.
 revoke update on public.reviews from authenticated;
 grant update (title, channel, content) on public.reviews to authenticated;
+revoke all on function public.is_workspace_member(uuid) from public, anon;
+revoke all on function public.is_workspace_admin(uuid) from public, anon;
+revoke all on function public.is_workspace_source_manager(uuid) from public, anon;
+revoke all on function public.is_workspace_reviewer(uuid) from public, anon;
+revoke all on function public.is_workspace_colleague(uuid) from public, anon;
+grant execute on function public.is_workspace_member(uuid) to authenticated;
+grant execute on function public.is_workspace_admin(uuid) to authenticated;
+grant execute on function public.is_workspace_source_manager(uuid) to authenticated;
+grant execute on function public.is_workspace_reviewer(uuid) to authenticated;
+grant execute on function public.is_workspace_colleague(uuid) to authenticated;
+
+revoke all on function public.create_workspace(text) from public, anon;
+revoke all on function public.accept_pending_workspace_invitations() from public, anon;
+revoke all on function public.set_review_status(uuid, text) from public, anon;
 grant execute on function public.create_workspace(text) to authenticated;
 grant execute on function public.accept_pending_workspace_invitations() to authenticated;
 grant execute on function public.set_review_status(uuid, text) to authenticated;
