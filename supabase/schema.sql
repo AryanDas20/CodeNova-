@@ -17,9 +17,9 @@ begin;
 create extension if not exists pgcrypto;
 
 -- -----------------------------------------------------------------------------
--- Shared helper functions
 -- Firebase UID is a TEXT value in JWT claim "sub", not a PostgreSQL UUID.
 -- Restrict accepted tokens to this Firebase project.
+-- Table-dependent helper functions are defined after the tables below.
 -- -----------------------------------------------------------------------------
 
 create or replace function public.base_firebase_uid()
@@ -38,64 +38,7 @@ as $$
   end;
 $$;
 
--- SECURITY DEFINER helpers avoid recursive RLS evaluation on workspace_members.
-create or replace function public.base_is_workspace_member(p_workspace_id uuid)
-returns boolean
-language sql
-stable
-security definer
-set search_path = ''
-as $$
-  select exists (
-    select 1
-    from public.workspace_members wm
-    where wm.workspace_id = p_workspace_id
-      and wm.user_id = public.base_firebase_uid()
-  );
-$$;
-
-create or replace function public.base_is_workspace_owner(p_workspace_id uuid)
-returns boolean
-language sql
-stable
-security definer
-set search_path = ''
-as $$
-  select exists (
-    select 1
-    from public.workspaces w
-    where w.id = p_workspace_id
-      and w.owner_id = public.base_firebase_uid()
-  );
-$$;
-
-create or replace function public.base_has_workspace_role(
-  p_workspace_id uuid,
-  p_allowed_roles text[]
-)
-returns boolean
-language sql
-stable
-security definer
-set search_path = ''
-as $$
-  select exists (
-    select 1
-    from public.workspace_members wm
-    where wm.workspace_id = p_workspace_id
-      and wm.user_id = public.base_firebase_uid()
-      and wm.role = any (p_allowed_roles)
-  );
-$$;
-
-revoke all on function public.base_firebase_uid() from public, anon;
-revoke all on function public.base_is_workspace_member(uuid) from public, anon;
-revoke all on function public.base_is_workspace_owner(uuid) from public, anon;
-revoke all on function public.base_has_workspace_role(uuid, text[]) from public, anon;
 grant execute on function public.base_firebase_uid() to authenticated;
-grant execute on function public.base_is_workspace_member(uuid) to authenticated;
-grant execute on function public.base_is_workspace_owner(uuid) to authenticated;
-grant execute on function public.base_has_workspace_role(uuid, text[]) to authenticated;
 
 -- -----------------------------------------------------------------------------
 -- Core tables
@@ -188,6 +131,67 @@ create table if not exists public.review_versions (
   unique (review_id, version_number)
 );
 
+-- SECURITY DEFINER helpers avoid recursive RLS evaluation on workspace_members.
+create or replace function public.base_is_workspace_member(p_workspace_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.workspace_members wm
+    where wm.workspace_id = p_workspace_id
+      and wm.user_id = public.base_firebase_uid()
+  );
+$$;
+
+create or replace function public.base_is_workspace_owner(p_workspace_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.workspaces w
+    where w.id = p_workspace_id
+      and w.owner_id = public.base_firebase_uid()
+  );
+$$;
+
+create or replace function public.base_has_workspace_role(
+  p_workspace_id uuid,
+  p_allowed_roles text[]
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.workspace_members wm
+    where wm.workspace_id = p_workspace_id
+      and wm.user_id = public.base_firebase_uid()
+      and wm.role = any (p_allowed_roles)
+  );
+$$;
+
+revoke all on function public.base_firebase_uid() from public, anon;
+revoke all on function public.base_is_workspace_member(uuid) from public, anon;
+revoke all on function public.base_is_workspace_owner(uuid) from public, anon;
+revoke all on function public.base_has_workspace_role(uuid, text[]) from public, anon;
+revoke all on function public.base_is_workspace_member(uuid) from public, anon;
+revoke all on function public.base_is_workspace_owner(uuid) from public, anon;
+revoke all on function public.base_has_workspace_role(uuid, text[]) from public, anon;
+grant execute on function public.base_is_workspace_member(uuid) to authenticated;
+grant execute on function public.base_is_workspace_owner(uuid) to authenticated;
+grant execute on function public.base_has_workspace_role(uuid, text[]) to authenticated;
+
 create index if not exists idx_workspace_members_user on public.workspace_members(user_id);
 create index if not exists idx_brand_sources_workspace on public.brand_sources(workspace_id);
 create index if not exists idx_reviews_workspace_status on public.reviews(workspace_id, status);
@@ -208,7 +212,7 @@ begin
 end;
 $$;
 
- drop trigger if exists trg_workspaces_updated_at on public.workspaces;
+drop trigger if exists trg_workspaces_updated_at on public.workspaces;
 create trigger trg_workspaces_updated_at before update on public.workspaces
 for each row execute function public.base_set_updated_at();
 
