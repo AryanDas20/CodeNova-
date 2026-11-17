@@ -189,6 +189,7 @@ function setGuestState() {
   $('#userState').textContent = 'Browsing without an account';
   $('#userAvatar').textContent = 'G';
   $('#topAuthButton').textContent = 'Sign in';
+  document.body.classList.add('is-guest');
   $('#supabaseConnection').textContent = configured ? 'Connected · signed out' : 'Not configured';
   $('#supabaseConnection').className = `status-pill ${configured ? 'success' : 'neutral'}`;
   $('#agentConnection').textContent = 'Sign in to connect';
@@ -238,6 +239,7 @@ async function handleSession(session) {
   $('#connectionState').innerHTML = '<i></i> Connected';
   $('#connectionState').classList.add('connected');
   $('#topAuthButton').textContent = 'Account';
+  document.body.classList.remove('is-guest');
   $('#userName').textContent = getDisplayName();
   $('#userState').textContent = state.user.email || 'Signed in';
   $('#userAvatar').textContent = initials(getDisplayName());
@@ -756,7 +758,8 @@ function safeSetPreference(key, value) {
   try { window.localStorage.setItem(key, value); } catch { /* Storage may be blocked; preferences remain usable for this page. */ }
 }
 function loadPreferences() {
-  if (safeGetPreference('base-theme') === 'dark') document.body.classList.add('dark');
+  const savedTheme = safeGetPreference('base-theme');
+  if (savedTheme === 'dark' || (!savedTheme && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)) document.body.classList.add('dark');
   state.reducedMotion = safeGetPreference('base-reduced-motion') === 'true';
   document.body.classList.toggle('reduced-motion', state.reducedMotion);
   syncPreferenceButtons();
@@ -770,6 +773,7 @@ function toggleTheme() {
   document.body.classList.toggle('dark');
   safeSetPreference('base-theme', document.body.classList.contains('dark') ? 'dark' : 'light');
   syncPreferenceButtons();
+  $('#themeButton').textContent = document.body.classList.contains('dark') ? '☀' : '☾';
 }
 $('#themeButton').addEventListener('click', toggleTheme);
 $('#darkSwitch').addEventListener('click', toggleTheme);
@@ -936,3 +940,65 @@ function bindStaticControls() {
 }
 
 initialise();
+
+
+// ---------- Landing buttons ----------
+function openAuth(mode) {
+  if (state.authMode !== mode) $('#toggleAuthMode').click();
+  openModal('authModal');
+}
+$('#landingLogin')?.addEventListener('click', () => openAuth('signin'));
+$('#landingSignup')?.addEventListener('click', () => openAuth('signup'));
+$('#themeButton').textContent = document.body.classList.contains('dark') ? '☀' : '☾';
+
+// ---------- Detailed explanation under every page heading ----------
+const EXPLAIN = {
+  overview: ['What this dashboard does', 'The overview summarises your active workspace: totals for reviews, open items, approved sources and team members come live from your database. Use “New review” to submit content, or the source library link to add the approved facts BASE compares drafts against.'],
+  reviews: ['How the review queue works', 'Each row is a draft submitted for checking. Open one to read Agent 37’s findings (severity, explanation, source reference and suggestion), add comments, and change status. To keep separation of duties, the person who submitted a review cannot be the one who approves it.'],
+  sources: ['Why brand sources matter', 'Sources are your single source of truth: approved messaging, claims, legal wording and style rules. Analysis only cites sources that are approved, so every finding can be traced to a document your team trusts. Add, search and approve sources here (approval needs the right role).'],
+  insights: ['Reading your insights', 'Insights aggregate findings across reviews so you can see which issues repeat, how severe they are and how quickly reviews are resolved. Use them to decide which brand rules need clearer wording.'],
+  team: ['Roles and permissions', 'Admins can invite members and rename the workspace. Reviewers can approve sources and decide reviews; members can submit content and comment. Permissions are enforced by the database, not just by the interface.'],
+  history: ['Audit history', 'Every status change, approval, invitation and comment is recorded as an event with who did it and when. This timeline is append-only so decisions stay accountable.'],
+  settings: ['Settings explained', 'Change your display name, switch between light and dark mode, reduce motion, review connected services and download a copy of your data. Appearance choices are saved on this device only.'],
+  guide: ['Using this guide', 'Each card summarises one feature. Press “Guide tour” in the top bar for a step-by-step walkthrough that jumps to each part of the website.']
+};
+Object.entries(EXPLAIN).forEach(([view, [title, body]]) => {
+  const section = document.getElementById(view);
+  const heading = section?.querySelector('.page-heading');
+  if (!heading || section.querySelector('.auto-explain')) return;
+  const d = document.createElement('details');
+  d.className = 'feature-explain auto-explain'; d.open = true;
+  d.innerHTML = `<summary>ⓘ ${title}</summary><div>${body}</div>`;
+  heading.after(d);
+});
+
+// ---------- Guided website tour ----------
+const TOUR = [
+  { view: 'overview', sel: '#landing:not([hidden]), .heading-home', title: 'Welcome to BASE', text: 'BASE verifies content against your approved brand documents and keeps every decision accountable. This tour visits each part of the site and explains what it does.' },
+  { view: 'overview', sel: '#sidebar', title: 'Navigation', text: 'The sidebar switches between the review queue, brand sources, insights, team, audit history and settings. The workspace switcher at the top lets you move between workspaces.' },
+  { view: 'overview', sel: '.hero-panel', title: 'Control center', text: 'Start a review or set up your source library from here. The four cards below show live totals from your workspace.' },
+  { view: 'sources', sel: '#sources .page-heading', title: 'Brand sources', text: 'Add approved facts, claims and style rules. Agent 37 compares drafts only against approved sources and cites them in every finding.' },
+  { view: 'reviews', sel: '#reviews .page-heading', title: 'Review queue', text: 'Submit drafts, search and filter them, open one to see findings, comment, and approve or reject. Submitters cannot approve their own work.' },
+  { view: 'insights', sel: '#insights .page-heading', title: 'Insights', text: 'See recurring issues, severity and turnaround so you can improve your brand rules.' },
+  { view: 'team', sel: '#team .page-heading', title: 'Team & roles', text: 'Invite colleagues (admins only) and see who can submit, review or administer.' },
+  { view: 'history', sel: '#history .page-heading', title: 'Audit history', text: 'A permanent timeline of who changed what and when.' },
+  { view: 'settings', sel: '#settings .page-heading', title: 'Settings & theme', text: 'Edit your profile, switch light/dark mode, reduce motion and export your data.' },
+  { view: 'overview', sel: '#agentTopButton', title: 'Agent 37', text: 'Your AI assistant. Ask it to explain features, navigate, create reviews or add sources. It always asks you to confirm before changing data.' }
+];
+let tourIndex = -1, tourBox = null;
+function endTour() { tourBox?.remove(); tourBox = null; tourIndex = -1; $$('.tour-highlight').forEach(e => e.classList.remove('tour-highlight')); go('overview'); }
+function showTour(i) {
+  if (i < 0 || i >= TOUR.length) return endTour();
+  tourIndex = i; const s = TOUR[i];
+  go(s.view);
+  $$('.tour-highlight').forEach(e => e.classList.remove('tour-highlight'));
+  const target = s.sel.split(',').map(x => document.querySelector(x.trim())).find(el => el && el.offsetParent !== null);
+  if (target) { target.classList.add('tour-highlight'); target.scrollIntoView({ block: 'center', behavior: state.reducedMotion ? 'auto' : 'smooth' }); }
+  if (!tourBox) { tourBox = document.createElement('div'); tourBox.className = 'tour-box'; tourBox.setAttribute('role', 'dialog'); tourBox.setAttribute('aria-label', 'Website guide tour'); document.body.appendChild(tourBox); }
+  tourBox.innerHTML = `<small>Step ${i + 1} of ${TOUR.length}</small><h3>${s.title}</h3><p>${s.text}</p><div class="tour-actions"><button class="button button-secondary button-small" data-t="skip">Skip</button><span></span>${i ? '<button class="button button-secondary button-small" data-t="back">Back</button>' : ''}<button class="button button-primary button-small" data-t="next">${i === TOUR.length - 1 ? 'Finish' : 'Next'}</button></div>`;
+  tourBox.querySelector('[data-t=next]').onclick = () => showTour(i + 1);
+  tourBox.querySelector('[data-t=back]')?.addEventListener('click', () => showTour(i - 1));
+  tourBox.querySelector('[data-t=skip]').onclick = endTour;
+}
+$$('[data-tour]').forEach(b => b.addEventListener('click', () => showTour(0)));
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && tourBox) endTour(); });
