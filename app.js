@@ -855,6 +855,7 @@ function closeAgent() {
   $('#agentDrawer').setAttribute('aria-hidden', 'true');
 }
 $('#agentTopButton').addEventListener('click', openAgent);
+$('#dashboardAgentFeature')?.addEventListener('click', openAgent);
 $('#openAgentNav').addEventListener('click', openAgent);
 $('#guideAgentButton').addEventListener('click', openAgent);
 $('#guideOpenAgent').addEventListener('click', openAgent);

@@ -141,3 +141,14 @@ api/
 supabase/
   schema.sql
 ```
+
+## Visual refresh — Mint / Sun / Tomato palette
+
+The current UI refresh uses the supplied colour reference across the landing page and workspace:
+
+- Mint: `#A8D8B9`
+- Sun yellow: `#F6D55C`
+- Tomato red: `#ED553B`
+- Soft off-white: `#F1F1F1`
+
+The light and dark appearance modes share these accents, with theme-specific surface and text colours. Six matching clay-style WebP illustrations are stored in `assets/` and used on both the public feature cards and the dashboard feature launcher. The dashboard cards open their corresponding workspace areas; the Agent 37 card opens the assistant drawer.
